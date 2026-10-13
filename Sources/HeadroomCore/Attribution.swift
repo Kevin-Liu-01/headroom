@@ -124,11 +124,17 @@ public struct Attribution {
     public let byPid: [Int32: Proc]
     public let children: [Int32: [Int32]]
     let bundleID: (String) -> String?
+    /// The Codex home folder. Plugin and tool servers that the app server runs from inside it belong to the app,
+    /// not to a thread.
+    let codexHome: String
 
     /// `bundleID` maps an app bundle path to its identifier. The default reads the bundle's Info.plist once per path.
-    public init(procs: [Proc], bundleID: @escaping (String) -> String? = BundleIDs.shared.identifier) {
+    public init(procs: [Proc], bundleID: @escaping (String) -> String? = BundleIDs.shared.identifier,
+                codexHome: String? = nil) {
         self.procs = procs
         self.bundleID = bundleID
+        self.codexHome = codexHome ?? ProcessInfo.processInfo.environment["CODEX_HOME"]
+            ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
         var by: [Int32: Proc] = [:]
         by.reserveCapacity(procs.count)
         for p in procs { by[p.pid] = p }
@@ -206,7 +212,11 @@ public struct Attribution {
                     if case .session = above { result = above } else { result = .host(pid) }
                 } else if case .host(let h) = above, h == p.ppid {
                     let hostCwd = byPid[h]?.cwd
-                    if let cwd = p.cwd, !cwd.isEmpty, cwd != "/", cwd != hostCwd { result = .thread(host: h, cwd: cwd) } else { result = above }
+                    if let cwd = p.cwd, !cwd.isEmpty, cwd != "/", cwd != hostCwd, !isInCodexHome(cwd) {
+                        result = .thread(host: h, cwd: cwd)
+                    } else {
+                        result = above
+                    }
                 } else {
                     result = above
                 }
@@ -230,6 +240,11 @@ public struct Attribution {
     /// Maps each process to the nearest agent session process at or above it.
     public func sessionOwners() -> [Int32: Int32] {
         owners().compactMapValues { if case .session(let s) = $0 { s } else { nil } }
+    }
+
+    /// True for a folder inside the Codex home, where the app keeps its plugins and tool servers.
+    func isInCodexHome(_ cwd: String) -> Bool {
+        cwd == codexHome || cwd.hasPrefix(codexHome + "/")
     }
 
     /// A stable negative id for a Codex app thread, which has no process of its own: the same host and folder

@@ -155,6 +155,9 @@ enum DaemonFixture {
             Fixture.proc(603, 600, "/bin/zsh", gb: 0.01, cwd: code("web")),
             Fixture.proc(604, 603, "/opt/homebrew/bin/node", gb: 2.0, args: ["node", "/x/node_modules/.bin/next", "dev"]),
             Fixture.proc(605, 600, CodexFixture.modeHost, gb: 0.2, cwd: home),
+            // A plugin server that the daemon runs from inside the Codex home belongs to the app, not to a thread.
+            Fixture.proc(606, 600, "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node", gb: 0.5,
+                         cwd: "/Users/k/.codex/plugins/cache/openai-bundled/codex-app-tools/0.1.5", args: ["node", "./server.mjs"]),
             // A terminal with a proxy to the daemon, an MCP listing, the npm launcher and an exec run.
             Fixture.proc(700, 1, "/Applications/Ghostty.app/Contents/MacOS/ghostty", gb: 0.2),
             Fixture.proc(701, 700, "/bin/zsh", gb: 0.01),
@@ -168,7 +171,7 @@ enum DaemonFixture {
         ]
     }
 
-    static var result: Attribution.Result { Attribution(procs: tree, bundleID: CodexFixture.bundleID).attribute() }
+    static var result: Attribution.Result { Attribution(procs: tree, bundleID: CodexFixture.bundleID, codexHome: "/Users/k/.codex").attribute() }
 }
 
 @Suite("Codex app server")
@@ -198,16 +201,16 @@ struct CodexAppServerTests {
         #expect(r.codex.hostPid == 600)
         #expect(!r.sessions.contains { $0.pid == 600 })
         #expect(r.codexPids.contains(501))
-        // ChatGPT 1.0 + daemon tree 6.72 (threads 3.01 and 2.01, its own 1.5 and the mode host 0.2) + launcher session 2.45 + exec 0.3.
-        #expect(r.codex.totalGB == 10.47)
-        #expect(r.codex.appGB == 7.72)
+        // ChatGPT 1.0 + daemon tree 7.22 (threads 3.01 and 2.01, its own 1.5, the mode host 0.2 and a plugin 0.5) + launcher session 2.45 + exec 0.3.
+        #expect(r.codex.totalGB == 10.97)
+        #expect(r.codex.appGB == 8.22)
         #expect(r.codex.terminalGB == 2.75)
         #expect(r.agents.totalGB == r.codex.totalGB)
     }
 
     @Test func theDaemonsThreadsAreSessionsByFolder() {
         let by = Dictionary(uniqueKeysWithValues: r.sessions.map { ($0.label, $0) })
-        #expect(Set(by.keys) == ["api", "web", "mobile", "docs"])
+        #expect(Set(by.keys) == ["api", "web", "mobile", "docs"], "a plugin server in the Codex home is not a thread")
         #expect(by["api"]?.totalGB == 3.01)
         #expect(by["api"]?.inApp == true, "the daemon runs the app's threads")
         #expect(by["api"]?.app == .codex)
@@ -236,11 +239,12 @@ struct CodexAppServerTests {
     }
 
     @Test func aDaemonWithoutTheAppStillCounts() {
-        let r = Attribution(procs: DaemonFixture.tree.filter { $0.pid != 500 && $0.pid != 501 }, bundleID: CodexFixture.bundleID).attribute()
+        let r = Attribution(procs: DaemonFixture.tree.filter { $0.pid != 500 && $0.pid != 501 }, bundleID: CodexFixture.bundleID,
+                            codexHome: "/Users/k/.codex").attribute()
         #expect(r.codex.pid == nil)
         #expect(r.codex.hostPid == 600)
         #expect(r.codex.appRunning)
-        #expect(r.codex.totalGB == 9.47)
+        #expect(r.codex.totalGB == 9.97, "the daemon tree includes its plugin server")
     }
 }
 
