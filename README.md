@@ -1,6 +1,6 @@
 # Headroom
 
-![The macOS Force Quit dialog after the system ran out of application memory, with Claude at 231.98 GB](docs/out-of-memory.png)
+![The macOS Force Quit dialog after the system ran out of application memory, with Claude at 237.35 GB](docs/out-of-memory.png)
 
 Headroom is a macOS menu bar app that watches memory use by the Claude and Codex desktop apps, their agent sessions and every process those sessions start. It alerts the person at the Mac when memory runs low, relays the current memory state to agents through a file, a local HTTP API, a command line tool, hooks for Claude Code and Codex, and an MCP server, and carries out actions only when a person clicks them. Headroom never pauses, stops or kills a process on its own.
 
