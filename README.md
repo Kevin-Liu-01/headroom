@@ -6,7 +6,7 @@ Headroom is a macOS menu bar app that watches memory use by the Claude and Codex
 
 ## Screenshots
 
-These screenshots show a made-up machine. The Claude agents use 39.6 GB, of which 38.4 GB runs in the Claude app and 1.2 GB in a session started from a terminal. The Codex agents use 18.5 GB, of which 14.6 GB runs in the Codex app and 3.9 GB in a terminal session. Neither app crosses its own 40 GB line, but together the agents use 58.1 GB, which crosses the 40 GB line for all agents and puts the advice at hold. One agent request waits for an answer. The images are rendered with `HeadroomApp --render docs --demo`, which fixes the clock so both themes show the same times. Without `--demo`, the same command renders the live state of the Mac it runs on.
+These screenshots show a made-up machine. The Claude agents use 39.6 GB, of which 38.4 GB runs in the Claude app and 1.2 GB in a session started from a terminal. The Codex agents use 18.5 GB, of which 14.6 GB runs in the Codex app and 3.9 GB in a terminal session. Neither app crosses its own 40 GB line, but together the agents use 58.1 GB, which crosses the 40 GB line for all agents and puts the advice at hold. One agent request waits for an answer. The demo uses the base lines of 40 and 70 GB. The images are rendered with `HeadroomApp --render docs --demo`, which fixes the clock so both themes show the same times. Without `--demo`, the same command renders the live state of the Mac it runs on.
 
 | Light | Dark |
 | --- | --- |
@@ -57,13 +57,13 @@ macOS does not let an unprivileged app read the footprint of processes owned by 
 
 ## When it alerts
 
-Headroom watches three totals: all agents together, the Claude agents and the Codex agents. Each has a hold line at 40 GB and a critical line at 70 GB by default. Free memory and the system's memory pressure have their own lines. The advice is the worst of them.
+Headroom watches three totals: all agents together, the Claude agents and the Codex agents. On a new install each has a hold line at 47 percent of the Mac's memory and a critical line at 70 percent, rounded to 5 GB, so a 128 GB Mac holds at 60 GB and turns critical at 90 GB, and a 32 GB Mac at 15 and 20 GB. Free memory and the system's memory pressure have their own lines. The advice is the worst of them.
 
 | Advice | When | What it means |
 | --- | --- | --- |
 | ok | No line is crossed. | Agents may start heavy jobs. |
-| hold | The agents, Claude or Codex use 40 GB or more, free memory is below 30 percent, or the system reports memory pressure. | Agents start nothing new that is heavy. |
-| critical | The agents, Claude or Codex use 70 GB or more, free memory is below 15 percent, or the system reports critical pressure. | Pause heavy jobs and restart Claude or Codex, whichever holds more memory. All agent state is on disk, so a restart of the app loses no work. |
+| hold | The agents, Claude or Codex reach their hold line, free memory is below 30 percent, or the system reports memory pressure. | Agents start nothing new that is heavy. |
+| critical | The agents, Claude or Codex reach their critical line, free memory is below 15 percent, or the system reports critical pressure. | Pause heavy jobs and restart Claude or Codex, whichever holds more memory. All agent state is on disk, so a restart of the app loses no work. |
 
 The settings window changes every line. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI, the hooks and the MCP server use the same lines as the app.
 

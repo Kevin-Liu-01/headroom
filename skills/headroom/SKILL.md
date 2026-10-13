@@ -29,8 +29,8 @@ Heavy work is any of the following:
 | Advice | When | What you do |
 | --- | --- | --- |
 | ok | No line is crossed. | Work normally. |
-| hold | Claude or Codex uses 40 GB or more, free memory is below 30 percent, or macOS reports memory pressure. | Start nothing new that is heavy. Finish or wait. |
-| critical | Claude or Codex uses 70 GB or more, free memory is below 15 percent, or macOS reports critical pressure. | Start nothing heavy, stop your own heavy jobs, and tell the person. They may restart the Claude app, and all agent state is on disk. |
+| hold | Claude or Codex reaches its hold line, 47 percent of the Mac's memory (60 GB on a 128 GB Mac), free memory is below 30 percent, or macOS reports memory pressure. | Start nothing new that is heavy. Finish or wait. |
+| critical | Claude or Codex reaches its critical line, 70 percent of the Mac's memory (90 GB on a 128 GB Mac), free memory is below 15 percent, or macOS reports critical pressure. | Start nothing heavy, stop your own heavy jobs, and tell the person. They may restart the Claude app, and all agent state is on disk. |
 
 `headroom status` prints the advice, the Claude and Codex totals, free memory, every agent session with its working directory, and the heavy jobs. Codex runs in the ChatGPT app (bundle id com.openai.codex) and as `codex` CLI sessions. Headroom counts both, and each app's total includes its terminal sessions. `headroom status --json` gives the same data to a script.
 

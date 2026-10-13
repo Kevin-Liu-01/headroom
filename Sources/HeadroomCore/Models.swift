@@ -369,6 +369,24 @@ public struct Thresholds: Codable, Equatable, Sendable {
 
     public static let defaults = Thresholds()
 
+    /// The defaults for a new install on a Mac with `totalGB` of memory: hold at 47 percent of it and critical
+    /// at 70 percent, rounded to 5 GB, for the agents, Claude and Codex lines. A 128 GB Mac gets 60 and 90 GB,
+    /// and a 32 GB Mac gets 15 and 20 GB. The free memory lines stay at 30 and 15 percent.
+    public static func scaled(toMemoryGB totalGB: Double) -> Thresholds {
+        guard totalGB > 0 else { return Thresholds() }
+        func round5(_ v: Double) -> Double { (v / 5).rounded() * 5 }
+        let hold = max(5, round5(totalGB * 0.47))
+        let critical = max(hold + 5, round5(totalGB * 0.70))
+        var t = Thresholds()
+        t.agentsWarningGB = hold
+        t.agentsCriticalGB = critical
+        t.claudeWarningGB = hold
+        t.claudeCriticalGB = critical
+        t.codexWarningGB = hold
+        t.codexCriticalGB = critical
+        return t
+    }
+
     /// Clamps values into sane ranges and keeps each critical line beyond its hold line.
     public func validated() -> Thresholds {
         var t = self

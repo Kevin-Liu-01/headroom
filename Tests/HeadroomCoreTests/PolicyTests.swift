@@ -17,6 +17,15 @@ struct PolicyTests {
         #expect(t.repeatMinutes == 5)
     }
 
+    @Test(arguments: [(128.0, 60.0, 90.0), (64.0, 30.0, 45.0), (32.0, 15.0, 20.0), (16.0, 10.0, 15.0), (8.0, 5.0, 10.0)])
+    func newInstallLinesScaleWithMemory(total: Double, hold: Double, critical: Double) {
+        let s = Thresholds.scaled(toMemoryGB: total)
+        #expect(s.agentsWarningGB == hold)
+        #expect(s.agentsCriticalGB == critical)
+        #expect(s.claudeWarningGB == hold && s.codexCriticalGB == critical)
+        #expect(s.freeWarningPercent == 30 && s.freeCriticalPercent == 15)
+    }
+
     @Test func okWhenEverythingIsBelowTheLines() {
         let e = Policy.evaluate(Fixture.snapshot(claudeGB: 20, freePercent: 80), t)
         #expect(e.advice == .ok)

@@ -46,7 +46,9 @@ public enum Store {
 
     public static func loadThresholds(paths: Paths) -> Thresholds {
         guard let data = try? Data(contentsOf: paths.settings),
-              let t = try? JSON.decoder().decode(Thresholds.self, from: data) else { return .defaults }
+              let t = try? JSON.decoder().decode(Thresholds.self, from: data) else {
+            return Thresholds.scaled(toMemoryGB: Double(SystemProbe.totalBytes()) / 1_073_741_824)
+        }
         return t.validated()
     }
 
