@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 echo "==> swift build -c release"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)"
@@ -24,8 +24,10 @@ BIN="$(swift build -c release --show-bin-path)"
 APP="$ROOT/build/Headroom.app"
 echo "==> assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Fonts"
 cp "$BIN/HeadroomApp" "$APP/Contents/MacOS/Headroom"
+# rsms InterVariable 4.1 and its SIL Open Font License; the app registers the font at launch.
+cp "$ROOT/Resources/Fonts/InterVariable.ttf" "$ROOT/Resources/Fonts/OFL.txt" "$APP/Contents/Resources/Fonts/"
 
 ICONSET="$ROOT/build/AppIcon.iconset"
 rm -rf "$ICONSET"

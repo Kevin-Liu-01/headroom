@@ -16,7 +16,7 @@ public struct ClientError: Error, CustomStringConvertible {
 /// A stdio MCP server (JSON-RPC 2.0, one message per line) with the tools status, can_start, note and request.
 public struct MCPServer {
     public let client: HeadroomClient
-    public static let version = "1.0.0"
+    public static let version = "1.1.0"
 
     public init(client: HeadroomClient) {
         self.client = client
@@ -25,7 +25,7 @@ public struct MCPServer {
     static let tools: [[String: Any]] = [
         [
             "name": "status",
-            "description": "Current memory state: the Claude app total, free memory, swap, pressure, agent sessions by memory, heavy jobs, and the advice (ok, hold or critical) with reasons.",
+            "description": "Current memory state: the agents' total, the Claude and Codex totals (each app with its terminal sessions), free memory, swap, pressure, the Claude Code and Codex sessions by memory with their 10 minute trend, heavy jobs, and the advice (ok, hold or critical) with reasons.",
             "inputSchema": ["type": "object", "properties": [String: Any]()],
         ],
         [
@@ -56,11 +56,11 @@ public struct MCPServer {
         ],
         [
             "name": "request",
-            "description": "Ask the person to approve an action: pause, resume or quit a process by pid, or restart-claude. Returns a request id; the person approves or denies it in Headroom. Headroom never acts without that approval.",
+            "description": "Ask the person to approve an action: pause, resume or quit a process by pid, restart-claude or restart-codex. Returns a request id; the person approves or denies it in Headroom. Headroom never acts without that approval.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "action": ["type": "string", "enum": ["pause", "resume", "quit", "restart-claude"]],
+                    "action": ["type": "string", "enum": RequestAction.allCases.map(\.rawValue)],
                     "pid": ["type": "integer"],
                     "reason": ["type": "string", "description": "Why the action helps. The person reads this."],
                 ],
@@ -84,7 +84,7 @@ public struct MCPServer {
                 "protocolVersion": requested,
                 "capabilities": ["tools": ["listChanged": false]],
                 "serverInfo": ["name": "headroom", "version": MCPServer.version],
-                "instructions": "Headroom watches memory on this Mac. Call can_start before heavy jobs (ffmpeg, model runs, browsers, builds, dev servers). When advice is hold, start nothing new that is heavy. When it is critical, ask the person with request.",
+                "instructions": "Headroom watches memory used by the Claude and Codex apps and their agent sessions on this Mac. Call can_start before heavy jobs (ffmpeg, model runs, browsers, builds, dev servers). When advice is hold, start nothing new that is heavy. When it is critical, ask the person with request.",
             ])
         case "ping":
             return result(id, [:])
@@ -124,7 +124,7 @@ public struct MCPServer {
             return JSON.string(try client.note(text: text, gb: MCPServer.number(args["gb"]), label: args["label"] as? String, pid: pid), pretty: true)
         case "request":
             guard let a = args["action"] as? String, let action = RequestAction(rawValue: a) else {
-                throw ClientError("action must be one of pause, resume, quit, restart-claude")
+                throw ClientError("action must be one of \(RequestAction.names)")
             }
             guard let reason = args["reason"] as? String else { throw ClientError("reason is required") }
             let pid = MCPServer.number(args["pid"]).map { Int32($0) }

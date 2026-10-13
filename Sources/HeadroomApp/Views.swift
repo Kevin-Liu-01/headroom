@@ -1,84 +1,8 @@
 import HeadroomCore
 import SwiftUI
 
-// Plain controls drawn in SwiftUI, so ImageRenderer draws them the same way the window does.
-
-struct PlainButtonStyleSmall: ButtonStyle {
-    var small = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(small ? .caption : .callout)
-            .padding(.horizontal, small ? 7 : 10)
-            .padding(.vertical, small ? 2 : 4)
-            .background(
-                RoundedRectangle(cornerRadius: small ? 5 : 6, style: .continuous)
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.18 : 0.08)))
-            .contentShape(Rectangle())
-    }
-}
-
-struct CheckboxStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Button {
-            configuration.isOn.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.35), lineWidth: 1)
-                        .frame(width: 14, height: 14)
-                    if configuration.isOn {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                }
-                configuration.label.font(.callout)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-struct Dot: View {
-    var advice: Advice
-    var size: CGFloat = 9
-
-    var body: some View {
-        Circle().fill(advice.color).frame(width: size, height: size)
-    }
-}
-
-struct SectionHeader<Trailing: View>: View {
-    var title: String
-    var detail: String?
-    @ViewBuilder var trailing: Trailing
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(title).font(.headline)
-            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-            Spacer()
-            trailing
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 4)
-    }
-}
-
-extension SectionHeader where Trailing == EmptyView {
-    init(title: String, detail: String? = nil) {
-        self.init(title: title, detail: detail) { EmptyView() }
-    }
-}
-
-struct GBText: View {
-    var gb: Double
-    var body: some View {
-        Text(Format.gb(gb)).monospacedDigit().frame(minWidth: 62, alignment: .trailing)
-    }
-}
+// The window, drawn in SwiftUI so ImageRenderer draws it the same way the window does. Ruled rows: hair-soft
+// between rows and hair between sections, edge to edge. Figures share one right edge.
 
 func pressureAdvice(_ p: Pressure) -> Advice {
     switch p {
@@ -94,99 +18,152 @@ func more(_ n: Int, _ noun: String) -> String {
 
 func relative(_ d: Date, now: Date = Date()) -> String {
     let s = max(0, Int(now.timeIntervalSince(d)))
+    if s < 5 { return "just now" }
     if s < 60 { return "\(s) s ago" }
     if s < 3600 { return "\(s / 60) min ago" }
     return "\(s / 3600) h ago"
 }
 
+/// Text with its backticked spans set in a monospaced face, for guidance that names a command.
+func codeText(_ s: String, font: Font) -> Text {
+    var out = Text(verbatim: "")
+    for (i, part) in s.components(separatedBy: "`").enumerated() where !part.isEmpty {
+        // A command never breaks across lines: its spaces are non-breaking.
+        let code = part.replacingOccurrences(of: " ", with: "\u{00A0}")
+        out = out + (i % 2 == 1 ? Text(verbatim: code).font(.system(size: 12, design: .monospaced)) : Text(verbatim: part).font(font))
+    }
+    return out
+}
+
+extension HeavyKind {
+    var glyph: Glyph {
+        switch self {
+        case .browser: .globeAlt
+        case .model: .cpuChip
+        case .encoder: .film
+        case .build: .wrenchScrewdriver
+        case .devServer: .serverStack
+        case .test: .beaker
+        case .container: .cube
+        }
+    }
+}
+
 struct MainView: View {
     @ObservedObject var model: AppModel
     var actions: WindowActions
-    /// True when rendered to PNG: no scroll view and a painted background.
+    /// True when rendered to PNG: no scroll view.
     var rendering = false
-    @Environment(\.colorScheme) private var scheme
 
     static let width: CGFloat = 440
-    /// Rows per list in a rendered screenshot. The window itself scrolls and shows every row.
+    static let pad: CGFloat = 16
+    /// Every row has one leading slot for its glyph, mark or chevron, so every title starts at `inset`.
+    static let slot: CGFloat = 16
+    static let gap: CGFloat = 8
+    static let inset: CGFloat = pad + slot + gap
+    /// The figure column: every GB value in the window ends at the same right edge.
+    static let figure: CGFloat = 66
+    /// Rows per list in a rendered screenshot and before Show more.
     static let renderRows = 6
+    /// Section heads: air goes under them.
+    static let headTop: CGFloat = 10
+    static let headBottom: CGFloat = 14
+
+    var now: Date { model.fixedNow ?? Date() }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let st = model.status {
-                header(st)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-                Divider().padding(.top, 12)
+                head(st)
+                Rule()
                 if rendering {
-                    content(st).padding(.horizontal, 16).padding(.bottom, 8)
+                    content(st)
                 } else {
-                    ScrollView {
-                        content(st).padding(.horizontal, 16).padding(.bottom, 8)
-                    }
-                    .frame(maxHeight: 470)
+                    ScrollView { content(st) }
+                        .scrollIndicators(.never)
+                        .frame(maxHeight: model.maxContentHeight)
                 }
             } else {
-                Text("Taking the first sample.").foregroundStyle(.secondary).padding(16)
+                Text("Taking the first sample.").ty(.body).foregroundStyle(Tok.ink2)
+                    .padding(MainView.pad)
             }
-            Divider()
-            footer.padding(.horizontal, 16).padding(.vertical, 10)
+            Rule()
+            footer
         }
         .frame(width: MainView.width)
-        .background(rendering ? (scheme == .dark ? Color(white: 0.15) : Color(white: 0.97)) : Color.clear)
+        .background(Tok.paper)
     }
 
-    // MARK: Header
+    // MARK: Head
 
-    func header(_ st: StatusDocument) -> some View {
+    func head(_ st: StatusDocument) -> some View {
         let s = st.snapshot
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-                Dot(advice: st.advice, size: 12)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Claude").font(.callout).foregroundStyle(.secondary)
-                    Text(Format.gb(s.claude.totalGB))
-                        .font(.system(size: 28, weight: .semibold))
-                        .monospacedDigit()
-                }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(Format.gb(s.agents.totalGB)).ty(.display).foregroundStyle(Tok.ink)
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(st.advice.title).font(.headline)
-                    Text("\(s.claude.processCount) processes, \(relative(st.updatedAt))")
-                        .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Dot(advice: st.advice)
+                    Text(st.advice.title).ty(.label).foregroundStyle(Tok.ink)
                 }
             }
-            if st.advice != .ok {
-                VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("Claude and Codex agents in total, \(s.agents.processCount) processes")
+                Spacer()
+                Text("Updated \(relative(st.updatedAt, now: now))")
+            }
+            .font(Ty.small.font)
+            .foregroundStyle(Tok.titanium)
+            .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                if st.advice == .ok {
+                    statusLine(.checkCircle, Tok.green, Advice.ok.guidance)
+                } else {
                     ForEach(Array(st.reasons.enumerated()), id: \.offset) { _, r in
-                        Text(r.message).font(.callout)
+                        statusLine(.exclamationTriangle, r.level.color, r.message)
                     }
-                    Text(st.advice.guidance.replacingOccurrences(of: "`", with: ""))
-                        .font(.callout).foregroundStyle(.secondary)
+                    codeText(st.advice.guidance, font: Ty.small.font).foregroundStyle(Tok.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, MainView.slot + MainView.gap)
                 }
-                .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 0) {
+            .padding(.top, 14)
+
+            HStack(alignment: .top, spacing: 0) {
                 stat("Free", "\(s.system.freePercent)%", Format.gb(s.system.freeGB))
                 stat("Swap", Format.gb(s.system.swapUsedGB), "used")
-                stat("Compressed", Format.gb(s.system.compressedGB), "in memory")
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Pressure").font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 5) {
-                        Dot(advice: pressureAdvice(s.system.pressure), size: 7)
-                        Text(s.system.pressure.rawValue.capitalized).font(.body.weight(.medium))
+                stat("Compressed", Format.gb(s.system.compressedGB), nil)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Pressure").ty(.small).foregroundStyle(Tok.titanium)
+                    HStack(spacing: 6) {
+                        Dot(advice: pressureAdvice(s.system.pressure), size: 6)
+                        Text(s.system.pressure.rawValue.capitalized).ty(.body).foregroundStyle(Tok.ink)
                     }
-                    Text(" ").font(.caption)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.top, 14)
+        }
+        .padding(.horizontal, MainView.pad)
+        .padding(.top, 14)
+        .padding(.bottom, 14)
+    }
+
+    func statusLine(_ glyph: Glyph, _ color: Color, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: MainView.gap) {
+            GlyphView(glyph: glyph, size: MainView.slot, color: color).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
+            Text(text).ty(.body).foregroundStyle(Tok.ink).fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    func stat(_ title: String, _ value: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.body.weight(.medium)).monospacedDigit()
-            Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+    func stat(_ key: String, _ value: String, _ detail: String?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(key).ty(.small).foregroundStyle(Tok.titanium)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(value).ty(.number).foregroundStyle(Tok.ink)
+                if let detail { Text(detail).ty(.smallNumber).foregroundStyle(Tok.titanium) }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -197,61 +174,111 @@ struct MainView: View {
     func content(_ st: StatusDocument) -> some View {
         let s = st.snapshot
         VStack(alignment: .leading, spacing: 0) {
+            sectionHead(.presentationChartLine, "Memory", detail: "Agents over the last 60 minutes")
+            HistoryChart(points: model.history, hold: st.thresholds.agentsWarningGB, critical: st.thresholds.agentsCriticalGB,
+                         now: st.updatedAt, width: MainView.width - 2 * MainView.pad)
+                .padding(.horizontal, MainView.pad)
+                .padding(.bottom, 12)
+
             if !model.pending.isEmpty {
-                SectionHeader(title: "Requests from agents", detail: "\(model.pending.count)")
-                ForEach(model.pending) { r in requestRow(r) }
+                Rule()
+                sectionHead(.handRaised, "Requests", detail: "\(model.pending.count) waiting")
+                ForEach(model.pending) { r in
+                    Rule(color: Tok.hairSoft)
+                    requestRow(r)
+                }
             }
 
-            SectionHeader(title: "Agent sessions",
-                          detail: s.sessions.isEmpty ? nil : "\(s.sessions.count), \(Format.gb(s.sessions.reduce(0) { $0 + $1.totalGB }))")
-            if s.sessions.isEmpty {
-                Text("No Claude Code sessions are running.").font(.callout).foregroundStyle(.secondary).padding(.vertical, 4)
+            Rule()
+            sectionHead(.userGroup, "Agents") {
+                HStack(spacing: MainView.gap) {
+                    Text("10 min").frame(width: MainView.figure, alignment: .trailing)
+                        .help("The change over the last 10 minutes")
+                    Text("Memory").frame(width: MainView.figure, alignment: .trailing)
+                }
+                .font(Ty.small.font)
+                .foregroundStyle(Tok.titanium)
             }
-            ForEach(rows(s.sessions, all: model.showAllSessions)) { x in sessionRow(x) }
-            moreToggle(s.sessions.count, "session", all: $model.showAllSessions)
+            ForEach(AgentApp.allCases, id: \.self) { app in
+                Rule(color: app == .claude ? Tok.hairSoft : Tok.hair)
+                appSection(app, s)
+            }
 
-            SectionHeader(title: "Heavy jobs", detail: s.heavyJobs.isEmpty ? nil : "\(s.heavyJobs.count)") {
+            Rule()
+            sectionHead(.bolt, "Heavy jobs", detail: s.heavyJobs.isEmpty ? nil : "\(s.heavyJobs.count)") {
                 HStack(spacing: 6) {
                     if s.heavyJobs.contains(where: \.stopped) {
-                        Button("Resume paused") { actions.resumePaused() }.buttonStyle(PlainButtonStyleSmall(small: true))
+                        TextButton(title: "Resume paused", glyph: .play) { actions.resumePaused() }
                     }
                     if s.heavyJobs.contains(where: { !$0.stopped && $0.personApp != true }) {
-                        Button("Pause heavy jobs") { actions.pauseHeavyJobs() }.buttonStyle(PlainButtonStyleSmall(small: true))
+                        TextButton(title: "Pause heavy jobs", glyph: .pause,
+                                   help: "Pause the jobs that agents and tools started. Your own apps are left out.") { actions.pauseHeavyJobs() }
                     }
                 }
             }
             if s.heavyJobs.isEmpty {
-                Text("No browsers, model runs, encoders, builds or dev servers above 256 MB.")
-                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 4)
+                Rule(color: Tok.hairSoft)
+                emptyRow("No browsers, model runs, encoders, builds, dev servers, test runs or containers above 256 MB.")
             }
-            ForEach(rows(s.heavyJobs, all: model.showAllJobs)) { j in jobRow(j) }
+            ForEach(rows(s.heavyJobs, all: model.showAllJobs)) { j in
+                Rule(color: Tok.hairSoft)
+                jobRow(j)
+            }
             moreToggle(s.heavyJobs.count, "job", all: $model.showAllJobs)
 
             if !model.notes.isEmpty {
-                SectionHeader(title: "Notes from agents", detail: "last 30 minutes")
+                Rule()
+                sectionHead(.megaphone, "Notes", detail: "From agents in the last 30 minutes")
                 ForEach(Array(model.notes.reversed().prefix(5))) { n in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(n.text).font(.callout)
-                        Text(noteDetail(n)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 3)
+                    Rule(color: Tok.hairSoft)
+                    noteRow(n)
                 }
             }
 
-            SectionHeader(title: "Other apps")
-            ForEach(s.apps.prefix(5)) { a in
-                HStack {
-                    Text(a.name).font(.callout).lineLimit(1)
-                    Text("\(a.processCount)").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    GBText(gb: a.totalGB).font(.callout)
+            if !s.apps.isEmpty {
+                Rule()
+                sectionHead(.squares2x2, "Other apps")
+                ForEach(s.apps.prefix(5)) { a in
+                    Rule(color: Tok.hairSoft)
+                    HStack(spacing: MainView.gap) {
+                        Text(a.name).ty(.body).foregroundStyle(Tok.ink).lineLimit(1)
+                        Text("\(a.processCount) proc").ty(.smallNumber).foregroundStyle(Tok.titanium)
+                        Spacer(minLength: MainView.gap)
+                        gbText(a.totalGB)
+                    }
+                    .padding(.leading, MainView.inset)
+                    .padding(.trailing, MainView.pad)
+                    .padding(.vertical, 7)
                 }
-                .padding(.vertical, 2)
-            }
-            if let m = model.message {
-                Text(m).font(.caption).foregroundStyle(.secondary).padding(.top, 8)
             }
         }
+        .padding(.bottom, 4)
+    }
+
+    /// A section head: a Heroicon, a plain noun, a detail in titanium, and controls on the right. Air goes under it.
+    func sectionHead<Trailing: View>(_ glyph: Glyph, _ title: String, detail: String? = nil,
+                                     @ViewBuilder trailing: () -> Trailing = { EmptyView() }) -> some View {
+        HStack(alignment: .center, spacing: MainView.gap) {
+            GlyphView(glyph: glyph, size: MainView.slot, color: Tok.ink2)
+            Text(title).ty(.label).foregroundStyle(Tok.ink)
+            if let detail { Text(detail).ty(.small).foregroundStyle(Tok.titanium).lineLimit(1) }
+            Spacer(minLength: MainView.gap)
+            trailing()
+        }
+        .frame(minHeight: 24)
+        .padding(.horizontal, MainView.pad)
+        .padding(.top, MainView.headTop)
+        .padding(.bottom, MainView.headBottom)
+    }
+
+    func emptyRow(_ text: String) -> some View {
+        Text(text).ty(.small).foregroundStyle(Tok.titanium).fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, MainView.inset).padding(.trailing, MainView.pad).padding(.vertical, 9)
+    }
+
+    func gbText(_ gb: Double) -> some View {
+        Text(Format.gb(gb)).ty(.number).foregroundStyle(Tok.ink).lineLimit(1)
+            .frame(width: MainView.figure, alignment: .trailing)
     }
 
     /// The first rows of a list, or all of them once the person asks. A rendered screenshot shows the first rows.
@@ -263,21 +290,93 @@ struct MainView: View {
     func moreToggle(_ count: Int, _ noun: String, all: Binding<Bool>) -> some View {
         if count > MainView.renderRows {
             let hidden = more(count - MainView.renderRows, noun)
-            if rendering {
-                Text(hidden).font(.caption).foregroundStyle(.secondary).padding(.top, 2)
-            } else {
-                Button(all.wrappedValue ? "Show fewer" : "Show \(hidden)") { all.wrappedValue.toggle() }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.top, 2)
+            Rule(color: Tok.hairSoft)
+            Group {
+                if rendering {
+                    Text(hidden).ty(.small).foregroundStyle(Tok.titanium).padding(.leading, MainView.slot + MainView.gap)
+                } else {
+                    Button {
+                        all.wrappedValue.toggle()
+                    } label: {
+                        HStack(spacing: MainView.gap) {
+                            GlyphView(glyph: .chevronDown, size: 12, color: Tok.titanium)
+                                .rotationEffect(.degrees(all.wrappedValue ? 180 : 0))
+                                .frame(width: MainView.slot)
+                            Text(all.wrappedValue ? "Show fewer" : "Show \(hidden)").ty(.small).foregroundStyle(Tok.ink2)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.horizontal, MainView.pad)
+            .padding(.vertical, 8)
         }
     }
 
-    func noteDetail(_ n: AgentNote) -> String {
+    // MARK: Agent apps
+
+    @ViewBuilder
+    func appSection(_ app: AgentApp, _ s: Snapshot) -> some View {
+        let total = s.total(app)
+        let list = s.sessions(of: app)
+        let all = app == .claude ? model.showAllSessions : model.showAllCodex
+        let idle = !total.appRunning && total.totalGB == 0
+        let change = History.change(in: model.history) { app == .claude ? $0.claude : $0.codex }
+        HStack(alignment: .center, spacing: MainView.gap) {
+            AppMark(app: app, size: MainView.slot)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name).ty(.label).foregroundStyle(Tok.ink)
+                let detail = bandDetail(total, list.count)
+                if !detail.isEmpty {
+                    Text(detail).ty(.small).foregroundStyle(Tok.titanium).lineLimit(1)
+                }
+            }
+            Spacer(minLength: MainView.gap)
+            if !idle { trendCell(change) }
+            Text(idle ? "Not running" : Format.gb(total.totalGB))
+                .ty(idle ? .small : .figure)
+                .foregroundStyle(idle ? Tok.titanium : Tok.ink)
+                .lineLimit(1)
+                .frame(minWidth: MainView.figure, alignment: .trailing)
+        }
+        .frame(minHeight: 24)
+        .padding(.horizontal, MainView.pad)
+        .padding(.top, MainView.headTop)
+        .padding(.bottom, MainView.headBottom)
+        .accessibilityElement(children: .combine)
+        if list.isEmpty, !idle {
+            Rule(color: Tok.hairSoft)
+            emptyRow("No \(app.name) sessions are running.")
+        }
+        ForEach(rows(list, all: all)) { x in
+            Rule(color: Tok.hairSoft)
+            sessionRow(x)
+        }
+        moreToggle(list.count, "session", all: app == .claude ? $model.showAllSessions : $model.showAllCodex)
+    }
+
+    /// "4 sessions, 1.2 GB in terminals" beside an app's name.
+    func bandDetail(_ t: AgentTotal, _ n: Int) -> String {
         var parts: [String] = []
-        if let gb = n.gb { parts.append(Format.gb(gb)) }
-        if let from = n.from { parts.append(Format.label(forCwd: from)) }
-        parts.append(relative(n.time))
+        if n > 0 { parts.append("\(n) session\(n == 1 ? "" : "s")") }
+        if t.terminalGB > 0 { parts.append("\(Format.gb(t.terminalGB)) in terminals") }
+        if !t.appRunning, t.totalGB > 0 { parts.append("app closed") }
         return parts.joined(separator: ", ")
+    }
+
+    /// The 10 minute change in the trend column, or a titanium dot until 10 minutes of samples exist.
+    func trendCell(_ gb: Double?) -> some View {
+        Group {
+            if let gb {
+                Text(Format.change(gb)).ty(.smallNumber).foregroundStyle(Tok.ink2)
+            } else {
+                Text("\u{00B7}").ty(.small).foregroundStyle(Tok.titanium)
+                    .help("The change shows after 10 minutes of samples")
+            }
+        }
+        .lineLimit(1)
+        .frame(width: MainView.figure, alignment: .trailing)
     }
 
     func sessionRow(_ x: AgentSession) -> some View {
@@ -286,127 +385,171 @@ struct MainView: View {
             Button {
                 if open { model.expanded.remove(x.pid) } else { model.expanded.insert(x.pid) }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: MainView.gap) {
+                    GlyphView(glyph: .chevronRight, size: 12, color: Tok.titanium)
                         .rotationEffect(.degrees(open ? 90 : 0))
-                        .frame(width: 10)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(x.label).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                        Text(Format.shortPath(x.cwd) + (x.inClaudeApp ? "" : ", outside Claude"))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .frame(width: MainView.slot)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(x.label).ty(.label).foregroundStyle(Tok.ink).lineLimit(1).truncationMode(.middle)
+                        Text(Format.shortPath(x.cwd) + (x.inApp ? "" : ", from a terminal") + ", \(x.processCount) proc")
+                            .ty(.small).foregroundStyle(Tok.titanium).lineLimit(1).truncationMode(.middle)
                     }
-                    Spacer(minLength: 8)
-                    Text("\(x.processCount) proc").font(.caption).foregroundStyle(.secondary)
-                    GBText(gb: x.totalGB)
+                    Spacer(minLength: MainView.gap)
+                    trendCell(x.trendGB)
+                    gbText(x.totalGB)
                 }
-                .padding(.vertical, 4)
+                .padding(.horizontal, MainView.pad)
+                .padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(x.app.name) session \(x.label), \(Format.gb(x.totalGB))")
             if open {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(x.top) { p in procRow(p) }
                 }
-                .padding(.leading, 18)
-                .padding(.bottom, 4)
+                .padding(.leading, MainView.inset)
+                .padding(.trailing, MainView.pad)
+                .padding(.bottom, 6)
             }
         }
     }
 
     func procRow(_ p: ProcSummary) -> some View {
-        HStack(spacing: 6) {
-            Text(p.name).font(.callout).lineLimit(1).truncationMode(.middle)
-            Text(verbatim: String(p.pid)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            if p.stopped { Text("paused").font(.caption).foregroundStyle(.secondary) }
-            Spacer(minLength: 6)
-            GBText(gb: p.gb).font(.callout)
-            if p.stopped {
-                Button("Resume") { actions.resume(pid: p.pid, start: p.startTime, name: p.name, tree: false) }.buttonStyle(PlainButtonStyleSmall(small: true))
-            } else {
-                Button("Pause") { actions.pause(pid: p.pid, start: p.startTime, name: p.name, tree: false) }.buttonStyle(PlainButtonStyleSmall(small: true))
-            }
-            Button("Quit") { actions.quit(pid: p.pid, start: p.startTime, name: p.name, tree: false) }.buttonStyle(PlainButtonStyleSmall(small: true))
+        HStack(spacing: MainView.gap) {
+            Text(p.name).ty(.body).foregroundStyle(Tok.ink).lineLimit(1).truncationMode(.middle)
+            Text(verbatim: String(p.pid)).ty(.smallNumber).foregroundStyle(Tok.titanium)
+            if p.stopped { Text("paused").ty(.small).foregroundStyle(Tok.titanium) }
+            Spacer(minLength: MainView.gap)
+            processButtons(pid: p.pid, start: p.startTime, name: p.name, stopped: p.stopped, tree: false)
+            gbText(p.gb)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, 2)
+    }
+
+    func processButtons(pid: Int32, start: Double, name: String, stopped: Bool, tree: Bool) -> some View {
+        HStack(spacing: 2) {
+            if stopped {
+                IconButton(glyph: .play, label: "Resume \(name)") { actions.resume(pid: pid, start: start, name: name, tree: tree) }
+            } else {
+                IconButton(glyph: .pause, label: "Pause \(name)") { actions.pause(pid: pid, start: start, name: name, tree: tree) }
+            }
+            IconButton(glyph: .xMark, label: "Quit \(name)") { actions.quit(pid: pid, start: start, name: name, tree: tree) }
+        }
     }
 
     func jobRow(_ j: HeavyJob) -> some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(j.name).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                Text(jobDetail(j))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .center, spacing: MainView.gap) {
+            GlyphView(glyph: j.kind.glyph, size: MainView.slot, color: Tok.ink2).help(j.kind.label)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(j.name).ty(.label).foregroundStyle(Tok.ink).lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 4) {
+                    if let app = j.app, let session = j.session {
+                        AppMark(app: app, size: 14)
+                        Text(session).padding(.trailing, 6)
+                    } else if j.personApp == true {
+                        Text("Opened by you").padding(.trailing, 6)
+                    }
+                    Text(jobDetail(j))
+                }
+                .font(Ty.small.font)
+                .foregroundStyle(Tok.titanium)
+                .lineLimit(1)
             }
-            Spacer(minLength: 6)
-            GBText(gb: j.totalGB).font(.callout)
-            if j.stopped {
-                Button("Resume") { actions.resume(pid: j.pid, start: j.startTime, name: j.name, tree: true) }.buttonStyle(PlainButtonStyleSmall(small: true))
-            } else {
-                Button("Pause") { actions.pause(pid: j.pid, start: j.startTime, name: j.name, tree: true) }.buttonStyle(PlainButtonStyleSmall(small: true))
-            }
-            Button("Quit") { actions.quit(pid: j.pid, start: j.startTime, name: j.name, tree: true) }.buttonStyle(PlainButtonStyleSmall(small: true))
+            .help("\(j.kind.label), pid \(j.pid), \(j.processCount) process\(j.processCount == 1 ? "" : "es")")
+            Spacer(minLength: MainView.gap)
+            processButtons(pid: j.pid, start: j.startTime, name: j.name, stopped: j.stopped, tree: true)
+            gbText(j.totalGB)
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, MainView.pad)
+        .padding(.vertical, 8)
     }
 
     func jobDetail(_ j: HeavyJob) -> String {
-        var parts = [j.kind.label, "pid \(j.pid)"]
-        if j.processCount > 1 { parts.append("\(j.processCount) proc") }
-        if let session = j.session { parts.append(session) } else if j.personApp == true { parts.append("your app") }
+        var parts = [j.kind.label]
         if j.stopped { parts.append("paused") }
         return parts.joined(separator: ", ")
     }
 
     func requestRow(_ r: AgentRequest) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(requestTitle(r)).font(.callout.weight(.medium))
-            Text(r.reason).font(.callout).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text((r.from.map { "From \(Format.label(forCwd: $0)), " } ?? "") + relative(r.createdAt)).font(.caption).foregroundStyle(.secondary)
+            Text(requestTitle(r)).ty(.label).foregroundStyle(Tok.ink)
+            Text(r.reason).ty(.body).foregroundStyle(Tok.ink2).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Text((r.from.map { "From \(Format.label(forCwd: $0)), " } ?? "") + relative(r.createdAt, now: now))
+                    .ty(.small).foregroundStyle(Tok.titanium)
                 Spacer()
-                Button("Deny") { actions.deny(r) }.buttonStyle(PlainButtonStyleSmall(small: true))
-                Button("Approve") { actions.approve(r) }.buttonStyle(PlainButtonStyleSmall(small: true))
+                TextButton(title: "Deny", glyph: .xMark) { actions.deny(r) }
+                TextButton(title: "Approve", glyph: .check, primary: true) { actions.approve(r) }
             }
+            .padding(.top, 4)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.05)))
-        .padding(.vertical, 3)
+        .padding(.leading, MainView.inset)
+        .padding(.trailing, MainView.pad)
+        .padding(.vertical, 10)
     }
 
     func requestTitle(_ r: AgentRequest) -> String {
-        if r.action == .restartClaude { return "Restart Claude" }
+        if let app = r.action.restarts { return "Restart \(app.name)" }
         return "\(r.action.label) \(r.processName ?? "process") (pid \(r.pid.map(String.init) ?? "?"))"
+    }
+
+    func noteRow(_ n: AgentNote) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(n.text).ty(.body).foregroundStyle(Tok.ink).fixedSize(horizontal: false, vertical: true)
+            Text(noteDetail(n)).ty(.small).foregroundStyle(Tok.titanium)
+        }
+        .padding(.leading, MainView.inset)
+        .padding(.trailing, MainView.pad)
+        .padding(.vertical, 8)
+    }
+
+    func noteDetail(_ n: AgentNote) -> String {
+        var parts: [String] = []
+        if let gb = n.gb { parts.append(Format.gb(gb)) }
+        if let from = n.from { parts.append("from \(Format.label(forCwd: from))") }
+        parts.append(relative(n.time, now: now))
+        return parts.joined(separator: ", ")
     }
 
     // MARK: Footer
 
     var footer: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             if let e = model.apiError {
-                Text(e).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(e).ty(.small).foregroundStyle(Tok.ink2).fixedSize(horizontal: false, vertical: true)
             }
             if model.notificationsOff {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
+                    GlyphView(glyph: .bellSlash, size: MainView.slot, color: Tok.amber)
                     Text("macOS does not deliver Headroom's notifications. Alerts open this window and go to the log.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .ty(.small).foregroundStyle(Tok.ink2).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
-                    Button("Turn on") { actions.openNotificationSettings() }.buttonStyle(PlainButtonStyleSmall(small: true))
+                    TextButton(title: "Turn on") { actions.openNotificationSettings() }
                 }
             }
-            HStack(spacing: 8) {
-                Button("Restart Claude") { actions.restartClaude() }
-                Button("Open log") { actions.openLog() }
-                Button("Settings") { actions.openSettings() }
-                Spacer()
-                Button("Quit Headroom") { actions.quitHeadroom() }
+            HStack(spacing: 6) {
+                // A restart button shows only while its app runs.
+                ForEach(AgentApp.allCases.filter { model.status?.snapshot.total($0).pid != nil }, id: \.self) { app in
+                    TextButton(title: "Restart \(app.name)", glyph: .arrowPath) { actions.restart(app) }
+                }
+                TextButton(title: "Settings", glyph: .cog6Tooth) { actions.openSettings() }
+                Spacer(minLength: 0)
+                IconButton(glyph: .documentText, label: "Open the event log") { actions.openLog() }
+                IconButton(glyph: .power, label: "Quit Headroom") { actions.quitHeadroom() }
             }
-            .buttonStyle(PlainButtonStyleSmall())
-            Toggle("Launch at login", isOn: Binding(
-                get: { model.launchAtLogin },
-                set: { actions.setLaunchAtLogin($0) }))
+            HStack(spacing: 8) {
+                Toggle(isOn: Binding(get: { model.launchAtLogin }, set: { actions.setLaunchAtLogin($0) })) {
+                    Text("Launch at login").ty(.small).foregroundStyle(Tok.ink2)
+                }
                 .toggleStyle(CheckboxStyle())
+                Spacer(minLength: 8)
+                if let m = model.message {
+                    Text(m).ty(.small).foregroundStyle(Tok.ink2).lineLimit(2).multilineTextAlignment(.trailing)
+                }
+            }
         }
+        .padding(.horizontal, MainView.pad)
+        .padding(.vertical, 12)
     }
 }

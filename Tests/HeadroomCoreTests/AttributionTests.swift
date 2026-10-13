@@ -6,21 +6,24 @@ import Testing
 struct AttributionTests {
     let result = Attribution(procs: Fixture.tree).attribute()
 
-    @Test func claudeTotalIsTheAppAndAllDescendants() {
+    @Test func claudeTotalIsTheAppTreeAndTheTerminalSessions() {
         #expect(result.claude.pid == 100)
-        #expect(result.claude.processCount == 10)
-        #expect(result.claude.totalGB == 33.6)
+        #expect(result.claude.processCount == 11)
+        #expect(result.claude.totalGB == 34.3, "the app's 33.6 GB and the terminal session's 0.7 GB")
+        #expect(result.claude.appGB == 33.6)
+        #expect(result.claude.terminalGB == 0.7)
+        #expect(result.agents.totalGB == 34.3)
         #expect(!result.claudePids.contains(302))
         #expect(!result.claudePids.contains(200))
     }
 
     @Test func sessionsAreLabelledByWorkingDirectoryAndSortedByMemory() {
-        #expect(result.sessions.map(\.label) == ["headroom", "gt-cloud", "gt-transcreate"])
+        #expect(result.sessions.map(\.label) == ["headroom", "web-app", "ml-experiments"])
         #expect(result.sessions.map(\.totalGB) == [23.8, 9.0, 0.7])
         #expect(result.sessions.map(\.processCount) == [3, 3, 1])
         #expect(result.sessions[0].cwd == "/Users/k/repos/headroom")
-        #expect(result.sessions[0].inClaudeApp)
-        #expect(!result.sessions[2].inClaudeApp)
+        #expect(result.sessions[0].inApp)
+        #expect(!result.sessions[2].inApp)
         #expect(result.sessions[0].top.first?.name == "python3")
     }
 
@@ -34,20 +37,20 @@ struct AttributionTests {
 
     @Test func nestedSessionsKeepTheirOwnProcesses() {
         var procs = Fixture.tree
-        procs.append(Fixture.proc(130, 112, Fixture.claudeCode, gb: 0.5, cwd: "/Users/k/gt/gt-cloud/apps/landing"))
+        procs.append(Fixture.proc(130, 112, Fixture.claudeCode, gb: 0.5, cwd: "/Users/k/code/web-app/apps/landing"))
         procs.append(Fixture.proc(131, 130, "/opt/homebrew/bin/node", gb: 4.0))
         let r = Attribution(procs: procs).attribute()
         let landing = r.sessions.first { $0.label == "landing" }
         #expect(landing?.totalGB == 4.5)
-        #expect(r.sessions.first { $0.label == "gt-cloud" }?.totalGB == 9.0)
+        #expect(r.sessions.first { $0.label == "web-app" }?.totalGB == 9.0)
     }
 
     @Test func sessionsInOneDirectoryAreToldApart() {
         var procs = Fixture.tree
-        procs.append(Fixture.proc(140, 100, Fixture.claudeCode, gb: 0.5, cwd: "/Users/k/gt/gt-cloud"))
+        procs.append(Fixture.proc(140, 100, Fixture.claudeCode, gb: 0.5, cwd: "/Users/k/code/web-app"))
         let labels = Attribution(procs: procs).attribute().sessions.map(\.label)
-        #expect(labels.contains("gt-cloud (111)"))
-        #expect(labels.contains("gt-cloud (140)"))
+        #expect(labels.contains("web-app (111)"))
+        #expect(labels.contains("web-app (140)"))
     }
 
     @Test func heavyJobsAreTheTopClassifiedProcessWithItsTree() {
@@ -71,7 +74,7 @@ struct AttributionTests {
         let apps = Dictionary(uniqueKeysWithValues: result.apps.map { ($0.name, $0) })
         #expect(apps["Google Chrome"]?.totalGB == 3.0)
         #expect(apps["Google Chrome"]?.processCount == 2)
-        #expect(apps["Ghostty"]?.totalGB == 0.91)
+        #expect(apps["Ghostty"]?.totalGB == 0.21, "the agent session in Ghostty counts toward Claude, not Ghostty")
         #expect(apps["Claude"] == nil)
         #expect(result.apps.first?.name == "Google Chrome")
     }
@@ -90,7 +93,9 @@ struct AttributionTests {
         ]
         let r = Attribution(procs: procs).attribute()
         #expect(r.sessions.count == 1)
-        #expect(r.claude.totalGB == 0)
+        #expect(r.claude.pid == nil)
+        #expect(r.claude.totalGB == 1, "a terminal session counts without the app")
+        #expect(r.claude.appGB == 0)
     }
 
     @Test func classifiesProcessesAndCommands() {
@@ -100,6 +105,17 @@ struct AttributionTests {
         #expect(HeavyClassifier.classify(name: "python3", path: "/bin/python3", args: ["python3", "-c", "print(1)"], gb: 0.05) == nil)
         #expect(HeavyClassifier.classify(name: "swift-frontend", path: "/x/swift-frontend", args: nil, gb: 0.5) == .build)
         #expect(HeavyClassifier.classify(name: "zsh", path: "/bin/zsh", args: nil, gb: 0.01) == nil)
+    }
+
+    @Test func labelsNameTheHomeFolderAndFallBackToTheProcess() {
+        #expect(Format.label(forCwd: NSHomeDirectory()) == "Home folder")
+        #expect(Format.label(forCwd: "/", process: "claude") == "claude")
+        #expect(Format.label(forCwd: nil) == "unknown")
+        #expect(Format.label(forCwd: "/Users/k/code/api") == "api")
+        #expect(Format.change(0) == "0 MB")
+        #expect(Format.change(0.5) == "+512 MB")
+        #expect(Format.change(-1.25) == "\u{2212}1.2 GB" || Format.change(-1.25) == "\u{2212}1.3 GB")
+        #expect(Format.change(nil) == "")
     }
 
     @Test func snapshotCountsUnreadableProcesses() {

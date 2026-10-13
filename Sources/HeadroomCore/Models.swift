@@ -52,7 +52,7 @@ public enum Advice: String, Codable, Sendable, Comparable {
         case .hold:
             "Hold: agents start nothing new that is heavy. Wait with `headroom wait --gb N` or run the job later."
         case .critical:
-            "Critical: pause heavy jobs and restart Claude. All agent state is on disk, so a restart of the app loses no work."
+            "Critical: pause heavy jobs and restart Claude or Codex, whichever holds more memory. All agent state is on disk, so a restart of the app loses no work."
         }
     }
 
@@ -106,50 +106,106 @@ public struct ProcSummary: Codable, Equatable, Sendable, Identifiable {
     public var stopped: Bool
     /// The working directory label of the agent session that owns this process, if any.
     public var session: String?
+    /// The agent app of that session, Claude or Codex.
+    public var app: AgentApp?
     public var startTime: Double
 
     public var id: Int32 { pid }
 
-    public init(pid: Int32, name: String, gb: Double, stopped: Bool = false, session: String? = nil, startTime: Double = 0) {
+    public init(pid: Int32, name: String, gb: Double, stopped: Bool = false, session: String? = nil, app: AgentApp? = nil, startTime: Double = 0) {
         self.pid = pid
         self.name = name
         self.gb = gb
         self.stopped = stopped
         self.session = session
+        self.app = app
         self.startTime = startTime
     }
 }
 
-public struct ClaudeTotal: Codable, Equatable, Sendable {
+/// The two agent apps Headroom watches. Each app owns the sessions it starts, and a session started
+/// from a terminal belongs to the app whose agent it runs.
+public enum AgentApp: String, Codable, Sendable, CaseIterable, Comparable {
+    case claude, codex
+
+    public var name: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        }
+    }
+
+    /// The desktop app's bundle identifier. On macOS the Codex app is ChatGPT.app with the identifier com.openai.codex.
+    public var bundleID: String {
+        switch self {
+        case .claude: "com.anthropic.claudefordesktop"
+        case .codex: "com.openai.codex"
+        }
+    }
+
+    public static func < (a: AgentApp, b: AgentApp) -> Bool { a == .claude && b == .codex }
+}
+
+/// The memory of one agent app's agents, or of every agent process together.
+public struct AgentTotal: Codable, Equatable, Sendable {
+    /// The desktop app's main process. Nil when the app is not running, and for the combined total.
     public var pid: Int32?
+    /// Every process of this app's agents, counted once: the desktop app's tree, the Codex app server, and the
+    /// app's sessions started from terminals.
     public var totalGB: Double
     public var processCount: Int
+    /// The part that runs in the desktop app (for Codex, also in its app server). The rest runs in terminals.
+    public var appGB: Double?
+    /// The Codex app server (`codex app-server`) that runs the app's threads, when one runs.
+    public var hostPid: Int32?
 
-    public init(pid: Int32?, totalGB: Double, processCount: Int) {
+    public static let zero = AgentTotal(pid: nil, totalGB: 0, processCount: 0)
+
+    public init(pid: Int32?, totalGB: Double, processCount: Int, appGB: Double? = nil, hostPid: Int32? = nil) {
         self.pid = pid
         self.totalGB = totalGB
         self.processCount = processCount
+        self.appGB = appGB
+        self.hostPid = hostPid
     }
+
+    /// The memory of the app's sessions started from terminals.
+    public var terminalGB: Double { max(0, Format.round2(totalGB - (appGB ?? totalGB))) }
+
+    /// True when the desktop app or its app server runs.
+    public var appRunning: Bool { pid != nil || hostPid != nil }
 }
 
 public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
+    /// The session's process. A Codex app thread has no process of its own; its id is negative and stays the
+    /// same for one app server and folder.
     public var pid: Int32
+    /// Claude for a Claude Code process, Codex for a codex process or a Codex app thread.
+    public var app: AgentApp
     public var cwd: String?
     public var label: String
     public var totalGB: Double
     public var processCount: Int
-    public var inClaudeApp: Bool
+    /// True when the session runs inside its desktop app, false when it was started from a terminal.
+    public var inApp: Bool
+    public var startTime: Double
+    /// The change in GB over the last 10 minutes. Nil until Headroom has watched the session for 10 minutes.
+    public var trendGB: Double?
     public var top: [ProcSummary]
 
     public var id: Int32 { pid }
 
-    public init(pid: Int32, cwd: String?, label: String, totalGB: Double, processCount: Int, inClaudeApp: Bool, top: [ProcSummary]) {
+    public init(pid: Int32, app: AgentApp = .claude, cwd: String?, label: String, totalGB: Double, processCount: Int,
+                inApp: Bool, startTime: Double = 0, trendGB: Double? = nil, top: [ProcSummary]) {
         self.pid = pid
+        self.app = app
         self.cwd = cwd
         self.label = label
         self.totalGB = totalGB
         self.processCount = processCount
-        self.inClaudeApp = inClaudeApp
+        self.inApp = inApp
+        self.startTime = startTime
+        self.trendGB = trendGB
         self.top = top
     }
 }
@@ -191,6 +247,8 @@ public struct HeavyJob: Codable, Equatable, Sendable, Identifiable {
     public var totalGB: Double
     public var processCount: Int
     public var session: String?
+    /// The agent app of the session that owns the job.
+    public var app: AgentApp?
     public var stopped: Bool
     public var startTime: Double
     /// True for an app the person opened from /Applications, such as their own Google Chrome.
@@ -200,8 +258,9 @@ public struct HeavyJob: Codable, Equatable, Sendable, Identifiable {
     public var id: Int32 { pid }
 
     public init(pid: Int32, kind: HeavyKind, name: String, totalGB: Double, processCount: Int,
-                session: String? = nil, stopped: Bool = false, startTime: Double = 0, personApp: Bool? = nil) {
+                session: String? = nil, app: AgentApp? = nil, stopped: Bool = false, startTime: Double = 0, personApp: Bool? = nil) {
         self.personApp = personApp
+        self.app = app
         self.pid = pid
         self.kind = kind
         self.name = name
@@ -213,11 +272,17 @@ public struct HeavyJob: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// One sample of the whole machine, attributed to Claude, sessions and apps.
+/// One sample of the whole machine, attributed to the agent apps, their sessions and other apps.
 public struct Snapshot: Codable, Equatable, Sendable {
     public var time: Date
     public var system: SystemStats
-    public var claude: ClaudeTotal
+    /// Every Claude agent process: the Claude app's tree and the Claude Code sessions started from terminals.
+    public var claude: AgentTotal
+    /// Every Codex agent process: the Codex app's tree (ChatGPT.app, com.openai.codex), its app server and the
+    /// Codex sessions started from terminals.
+    public var codex: AgentTotal
+    /// Every agent process counted once. It equals the Claude total plus the Codex total.
+    public var agents: AgentTotal
     public var sessions: [AgentSession]
     public var heavyJobs: [HeavyJob]
     public var apps: [AppTotal]
@@ -226,18 +291,32 @@ public struct Snapshot: Codable, Equatable, Sendable {
     /// Processes whose footprint could not be read (other users, mostly root).
     public var unreadableCount: Int
 
-    public init(time: Date, system: SystemStats, claude: ClaudeTotal, sessions: [AgentSession] = [],
-                heavyJobs: [HeavyJob] = [], apps: [AppTotal] = [], largest: [ProcSummary] = [],
+    public init(time: Date, system: SystemStats, claude: AgentTotal, codex: AgentTotal = .zero, agents: AgentTotal? = nil,
+                sessions: [AgentSession] = [], heavyJobs: [HeavyJob] = [], apps: [AppTotal] = [], largest: [ProcSummary] = [],
                 processCount: Int = 0, unreadableCount: Int = 0) {
         self.time = time
         self.system = system
         self.claude = claude
+        self.codex = codex
+        self.agents = agents ?? AgentTotal(pid: nil, totalGB: Format.round2(claude.totalGB + codex.totalGB),
+                                           processCount: claude.processCount + codex.processCount)
         self.sessions = sessions
         self.heavyJobs = heavyJobs
         self.apps = apps
         self.largest = largest
         self.processCount = processCount
         self.unreadableCount = unreadableCount
+    }
+
+    public func total(_ app: AgentApp) -> AgentTotal {
+        switch app {
+        case .claude: claude
+        case .codex: codex
+        }
+    }
+
+    public func sessions(of app: AgentApp) -> [AgentSession] {
+        sessions.filter { $0.app == app }
     }
 }
 
@@ -254,8 +333,13 @@ public struct Reason: Codable, Equatable, Sendable {
 }
 
 public struct Thresholds: Codable, Equatable, Sendable {
+    /// Lines for every agent process together: both apps and the sessions started from terminals.
+    public var agentsWarningGB: Double = 40
+    public var agentsCriticalGB: Double = 70
     public var claudeWarningGB: Double = 40
     public var claudeCriticalGB: Double = 70
+    public var codexWarningGB: Double = 40
+    public var codexCriticalGB: Double = 70
     public var freeWarningPercent: Double = 30
     public var freeCriticalPercent: Double = 15
     public var processStepGB: Double = 16
@@ -269,6 +353,10 @@ public struct Thresholds: Codable, Equatable, Sendable {
         // Missing keys fall back to the defaults so an old settings file still loads.
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Thresholds.defaults
+        agentsWarningGB = try c.decodeIfPresent(Double.self, forKey: .agentsWarningGB) ?? d.agentsWarningGB
+        agentsCriticalGB = try c.decodeIfPresent(Double.self, forKey: .agentsCriticalGB) ?? d.agentsCriticalGB
+        codexWarningGB = try c.decodeIfPresent(Double.self, forKey: .codexWarningGB) ?? d.codexWarningGB
+        codexCriticalGB = try c.decodeIfPresent(Double.self, forKey: .codexCriticalGB) ?? d.codexCriticalGB
         claudeWarningGB = try c.decodeIfPresent(Double.self, forKey: .claudeWarningGB) ?? d.claudeWarningGB
         claudeCriticalGB = try c.decodeIfPresent(Double.self, forKey: .claudeCriticalGB) ?? d.claudeCriticalGB
         freeWarningPercent = try c.decodeIfPresent(Double.self, forKey: .freeWarningPercent) ?? d.freeWarningPercent
@@ -281,11 +369,15 @@ public struct Thresholds: Codable, Equatable, Sendable {
 
     public static let defaults = Thresholds()
 
-    /// Clamps values into sane ranges and keeps each critical line beyond its warning line.
+    /// Clamps values into sane ranges and keeps each critical line beyond its hold line.
     public func validated() -> Thresholds {
         var t = self
+        t.agentsWarningGB = max(1, t.agentsWarningGB)
+        t.agentsCriticalGB = max(t.agentsWarningGB, t.agentsCriticalGB)
         t.claudeWarningGB = max(1, t.claudeWarningGB)
         t.claudeCriticalGB = max(t.claudeWarningGB, t.claudeCriticalGB)
+        t.codexWarningGB = max(1, t.codexWarningGB)
+        t.codexCriticalGB = max(t.codexWarningGB, t.codexCriticalGB)
         t.freeWarningPercent = min(95, max(1, t.freeWarningPercent))
         t.freeCriticalPercent = min(t.freeWarningPercent, max(0, t.freeCriticalPercent))
         t.processStepGB = max(1, t.processStepGB)
@@ -294,10 +386,18 @@ public struct Thresholds: Codable, Equatable, Sendable {
         t.repeatMinutes = max(1, t.repeatMinutes)
         return t
     }
+
+    /// The hold and critical lines of one agent app.
+    public func lines(_ app: AgentApp) -> (warning: Double, critical: Double) {
+        switch app {
+        case .claude: (claudeWarningGB, claudeCriticalGB)
+        case .codex: (codexWarningGB, codexCriticalGB)
+        }
+    }
 }
 
 public enum RequestAction: String, Codable, Sendable, CaseIterable {
-    case pause, resume, quit, restartClaude = "restart-claude"
+    case pause, resume, quit, restartClaude = "restart-claude", restartCodex = "restart-codex"
 
     public var label: String {
         switch self {
@@ -305,8 +405,20 @@ public enum RequestAction: String, Codable, Sendable, CaseIterable {
         case .resume: "Resume"
         case .quit: "Quit"
         case .restartClaude: "Restart Claude"
+        case .restartCodex: "Restart Codex"
         }
     }
+
+    /// The app a restart action restarts. Nil for the actions that take a pid.
+    public var restarts: AgentApp? {
+        switch self {
+        case .restartClaude: .claude
+        case .restartCodex: .codex
+        default: nil
+        }
+    }
+
+    public static let names = "pause, resume, quit, restart-claude, restart-codex"
 }
 
 public enum RequestStatus: String, Codable, Sendable {
@@ -367,7 +479,9 @@ public struct AgentNote: Codable, Equatable, Sendable, Identifiable {
 
 /// The document written to state.json and served at GET /v1/status.
 public struct StatusDocument: Codable, Equatable, Sendable {
-    public var version: Int = 1
+    /// 2 since Codex: snapshot.codex, snapshot.agents, session.app and session.inApp (was inClaudeApp).
+    /// Each app's total counts that app's terminal sessions too; appGB is the part in the desktop app.
+    public var version: Int = 2
     public var source: String
     public var updatedAt: Date
     public var advice: Advice

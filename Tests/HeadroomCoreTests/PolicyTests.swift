@@ -41,16 +41,19 @@ struct PolicyTests {
     @Test func worstCheckWinsAndEveryReasonIsListed() {
         let e = Policy.evaluate(Fixture.snapshot(claudeGB: 45, freePercent: 10), t)
         #expect(e.advice == .critical)
-        #expect(e.reasons.map(\.check) == ["claude", "free"])
+        #expect(e.reasons.map(\.check) == ["agents", "claude", "free"])
         #expect(e.reasons[0].level == .hold)
-        #expect(e.reasons[1].level == .critical)
-        #expect(e.reasons[1].message.contains("10 percent"))
+        #expect(e.reasons[1].level == .hold)
+        #expect(e.reasons[2].level == .critical)
+        #expect(e.reasons[2].message.contains("10 percent"))
     }
 
     @Test func customThresholdsApply() {
         var custom = Thresholds()
         custom.claudeWarningGB = 10
         custom.claudeCriticalGB = 20
+        custom.agentsWarningGB = 100
+        custom.agentsCriticalGB = 200
         #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 12), custom).advice == .hold)
         #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 25), custom).advice == .critical)
     }
@@ -85,6 +88,7 @@ struct PolicyTests {
     @Test func guidanceSaysWhatToDo() {
         #expect(Advice.hold.guidance.contains("start nothing new that is heavy"))
         #expect(Advice.critical.guidance.contains("pause heavy jobs and restart Claude"))
+        #expect(Advice.critical.guidance.contains("Codex"))
         #expect(Advice.critical.guidance.contains("loses no work"))
     }
 
@@ -109,7 +113,7 @@ struct PolicyTests {
         // 40 percent free is 51.2 GB. A 20 GB job leaves 31.2 GB, which is 24 percent.
         let r = Policy.canStart(gb: 20, label: nil, status: Fixture.status(claudeGB: 10, freePercent: 40))
         #expect(!r.ok)
-        #expect(r.reason.contains("warning line"))
+        #expect(r.reason.contains("hold line"))
     }
 
     @Test func aJobLargerThanFreeMemorySaysSo() {
@@ -169,24 +173,24 @@ struct PolicyTests {
 
     @Test func processAlertOncePerStep() {
         var engine = AlertEngine()
-        let p16 = [ProcSummary(pid: 7, name: "node", gb: 17, session: "gt-cloud", startTime: 5)]
-        let p20 = [ProcSummary(pid: 7, name: "node", gb: 20, session: "gt-cloud", startTime: 5)]
-        let p33 = [ProcSummary(pid: 7, name: "node", gb: 33, session: "gt-cloud", startTime: 5)]
+        let p16 = [ProcSummary(pid: 7, name: "node", gb: 17, session: "web-app", startTime: 5)]
+        let p20 = [ProcSummary(pid: 7, name: "node", gb: 20, session: "web-app", startTime: 5)]
+        let p33 = [ProcSummary(pid: 7, name: "node", gb: 33, session: "web-app", startTime: 5)]
         let first = run(&engine, Fixture.status(claudeGB: 1, largest: p16), at: 0)
         #expect(first.map(\.kind) == [.process])
-        #expect(first[0].body.contains("gt-cloud"))
+        #expect(first[0].body.contains("web-app"))
         #expect(run(&engine, Fixture.status(claudeGB: 1, largest: p20), at: 20).isEmpty)
         #expect(run(&engine, Fixture.status(claudeGB: 1, largest: p33), at: 40).map(\.kind) == [.process])
     }
 
     @Test func alertBodyNamesSessionsAndProcesses() {
         var engine = AlertEngine()
-        let sessions = [AgentSession(pid: 5, cwd: "/x/gt-cloud", label: "gt-cloud", totalGB: 30, processCount: 9, inClaudeApp: true, top: [])]
-        let largest = [ProcSummary(pid: 6, name: "node", gb: 12, session: "gt-cloud")]
+        let sessions = [AgentSession(pid: 5, cwd: "/x/web-app", label: "web-app", totalGB: 30, processCount: 9, inApp: true, top: [])]
+        let largest = [ProcSummary(pid: 6, name: "node", gb: 12, session: "web-app")]
         let snap = Fixture.snapshot(claudeGB: 50, largest: largest, sessions: sessions)
         let doc = Policy.status(snap, .defaults, source: "test")
         let alerts = engine.step(doc, evaluation: Policy.evaluate(snap, .defaults), now: Date())
-        #expect(alerts.first?.body.contains("gt-cloud 30.0 GB") == true)
-        #expect(alerts.first?.body.contains("node (gt-cloud) 12.0 GB") == true)
+        #expect(alerts.first?.body.contains("Claude web-app 30.0 GB") == true)
+        #expect(alerts.first?.body.contains("node (web-app) 12.0 GB") == true)
     }
 }

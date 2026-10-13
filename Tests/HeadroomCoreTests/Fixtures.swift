@@ -21,7 +21,7 @@ enum Fixture {
             proc(100, 1, claudeApp, gb: 0.5),
             proc(101, 100, helper, gb: 0.3),
             proc(110, 100, disclaimer, gb: 0.001),
-            proc(111, 110, claudeCode, gb: 1.0, cwd: "/Users/k/gt/gt-cloud"),
+            proc(111, 110, claudeCode, gb: 1.0, cwd: "/Users/k/code/web-app"),
             proc(112, 111, "/opt/homebrew/bin/node", gb: 6.0, args: ["node", "/x/node_modules/.bin/next", "dev"]),
             proc(113, 112, "/opt/homebrew/bin/node", gb: 2.0, args: ["node", "worker.js"]),
             proc(120, 100, disclaimer, gb: 0.001),
@@ -32,7 +32,7 @@ enum Fixture {
             proc(201, 200, "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)", gb: 2.0),
             proc(300, 1, "/Applications/Ghostty.app/Contents/MacOS/ghostty", gb: 0.2),
             proc(301, 300, "/bin/zsh", gb: 0.01),
-            proc(302, 301, claudeCode, gb: 0.7, cwd: "/Users/k/gt/gt-transcreate"),
+            proc(302, 301, claudeCode, gb: 0.7, cwd: "/Users/k/code/ml-experiments"),
         ]
     }
 
@@ -44,7 +44,7 @@ enum Fixture {
     static func snapshot(claudeGB: Double, freePercent: Int = 80, pressure: Pressure = .normal,
                          largest: [ProcSummary] = [], sessions: [AgentSession] = []) -> Snapshot {
         Snapshot(time: Date(timeIntervalSince1970: 1_800_000_000), system: system(freePercent: freePercent, pressure: pressure),
-                 claude: ClaudeTotal(pid: 100, totalGB: claudeGB, processCount: 10), sessions: sessions, largest: largest)
+                 claude: AgentTotal(pid: 100, totalGB: claudeGB, processCount: 10), sessions: sessions, largest: largest)
     }
 
     static func status(claudeGB: Double, freePercent: Int = 80, pressure: Pressure = .normal,
@@ -63,7 +63,7 @@ enum Fixture {
         let obj: [String: Any] = [
             "session_id": "abc123",
             "transcript_path": "/Users/k/.claude/projects/x/abc123.jsonl",
-            "cwd": "/Users/k/gt/gt-cloud",
+            "cwd": "/Users/k/code/web-app",
             "permission_mode": "default",
             "hook_event_name": "PreToolUse",
             "tool_name": tool,

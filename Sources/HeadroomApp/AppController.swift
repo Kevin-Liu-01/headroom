@@ -6,7 +6,6 @@ import UserNotifications
 
 /// The menu bar app: samples, writes state, serves the API, alerts, and performs a person's clicks.
 final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, WindowActions {
-    static let claudeBundleID = "com.anthropic.claudefordesktop"
 
     let paths = Paths()
     let sampler = Sampler()
@@ -15,7 +14,13 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     var thresholds = Thresholds.defaults
     var engine = AlertEngine()
     var statusItem: NSStatusItem!
-    var popover: NSPopover!
+    /// The window exists only while it is open, so a closed window costs no memory and no drawing per sample.
+    var panel: MenuPanel?
+    var host: NSHostingController<PanelRoot>?
+    var sizeObservation: NSKeyValueObservation?
+    var clickMonitor: Any?
+    var history = History()
+    var trends = SessionTrends()
     var server: HTTPServer?
     var timer: DispatchSourceTimer?
     var pressureSource: DispatchSourceMemoryPressure?
@@ -24,18 +29,25 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     var pausedByHeadroom = Set<Int32>()
     let sampleQueue = DispatchQueue(label: "headroom.sample", qos: .utility)
     var sampling = false
+    /// Set by --snapshot-window: the PNG path for one capture of the live window.
+    var snapshotPath: String?
 
     // MARK: Launch
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        Inter.register()
         paths.ensureDir()
         thresholds = Store.loadThresholds(paths: paths)
+        history = History.read(paths: paths)
+        model.history = history.points
         interval = thresholds.sampleSeconds
-        Store.appendEvent("start", ["pid": Int(getpid()), "version": MCPServer.version], paths: paths)
-
         setUpStatusItem()
-        setUpNotifications()
-        startServer()
+        // A snapshot run only draws the window: no API, no notifications and no log lines.
+        if snapshotPath == nil {
+            Store.appendEvent("start", ["pid": Int(getpid()), "version": MCPServer.version], paths: paths)
+            setUpNotifications()
+            startServer()
+        }
         startPressureSource()
         model.launchAtLogin = SMAppService.mainApp.status == .enabled
         sampleNow()
@@ -50,34 +62,104 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     func setUpStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
-        statusItem.button?.action = #selector(togglePopover)
+        statusItem.button?.action = #selector(togglePanel)
+        statusItem.button?.imagePosition = .imageLeft
         updateStatusItem(nil)
+    }
 
-        popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = false
-        let host = NSHostingController(rootView: MainView(model: model, actions: self))
+    func makePanel() -> (MenuPanel, NSHostingController<PanelRoot>) {
+        if let panel, let host { return (panel, host) }
+        let host = NSHostingController(rootView: PanelRoot(model: model, actions: self))
         host.sizingOptions = [.preferredContentSize]
-        popover.contentViewController = host
+        let panel = MenuPanel(content: host)
+        panel.onCancel = { [weak self] in self?.closePanel() }
+        sizeObservation = host.observe(\.preferredContentSize, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.fitPanel() }
+        }
+        self.panel = panel
+        self.host = host
+        return (panel, host)
     }
 
     func updateStatusItem(_ doc: StatusDocument?) {
         guard let button = statusItem.button else { return }
-        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        let title = NSMutableAttributedString()
-        let advice = doc?.advice ?? .ok
-        let dotColor = doc == nil ? NSColor.secondaryLabelColor : advice.nsColor
-        title.append(NSAttributedString(string: "\u{25CF} ", attributes: [.foregroundColor: dotColor, .font: NSFont.systemFont(ofSize: 10)]))
-        let text = doc.map { Format.gb($0.snapshot.claude.totalGB) } ?? "--"
-        title.append(NSAttributedString(string: text, attributes: [.font: font, .baselineOffset: 0]))
-        button.attributedTitle = title
+        button.image = StatusArt.templateImage(level: StatusArt.level(doc), hold: StatusArt.holdLevel(doc))
+        button.attributedTitle = StatusArt.title(doc)
         if let doc {
-            button.toolTip = "Claude uses \(Format.gb(doc.snapshot.claude.totalGB)). \(doc.snapshot.system.freePercent)% of memory is free. Advice: \(doc.advice.rawValue)."
+            let s = doc.snapshot
+            button.toolTip = "The agents use \(Format.gb(s.agents.totalGB)): Claude \(Format.gb(s.claude.totalGB)), Codex \(Format.gb(s.codex.totalGB)). \(s.system.freePercent)% of memory is free. Advice: \(doc.advice.rawValue)."
         }
     }
 
-    @objc func togglePopover() {
-        if popover.isShown { popover.performClose(nil) } else { showPopover() }
+    @objc func togglePanel() {
+        if panel?.isVisible == true { closePanel() } else { showPanel() }
+    }
+
+    /// Places the window under the menu bar item, square and flush with the menu bar.
+    func placePanel() {
+        guard let button = statusItem.button, let itemWindow = button.window else { return }
+        let item = itemWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = itemWindow.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        model.maxContentHeight = max(240, visible.height - 360)
+        let (panel, host) = makePanel()
+        let size = host.view.fittingSize
+        let x = min(max(visible.minX + 4, item.minX), visible.maxX - size.width - 4)
+        panel.setFrame(NSRect(x: x, y: visible.maxY - size.height, width: size.width, height: size.height), display: true)
+    }
+
+    /// Keeps the top edge in place when the content grows or shrinks.
+    func fitPanel() {
+        guard let panel, let host, panel.isVisible else { return }
+        let size = host.view.fittingSize
+        let top = panel.frame.maxY
+        guard abs(size.height - panel.frame.height) > 0.5 || abs(size.width - panel.frame.width) > 0.5 else { return }
+        panel.setFrame(NSRect(x: panel.frame.minX, y: top - size.height, width: size.width, height: size.height), display: true)
+    }
+
+    /// Shows the window. With `focus` false it does not take focus from the app in front.
+    func openPanel(focus: Bool) {
+        placePanel()
+        guard let panel else { return }
+        if focus {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.orderFrontRegardless()
+        }
+        statusItem.button?.highlight(true)
+        if clickMonitor == nil {
+            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                self?.closePanel()
+            }
+        }
+    }
+
+    func writeSnapshot(_ path: String) {
+        let mb = Double(SystemProbe.footprint(getpid()) ?? 0) / 1_048_576
+        if let panel, let view = panel.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            print("\(path) \(Int(panel.frame.width))x\(Int(panel.frame.height)) at y \(Int(panel.frame.minY)), footprint \(Int(mb)) MB")
+        }
+        exit(0)
+    }
+
+    func closePanel() {
+        panel?.orderOut(nil)
+        // Released on the next turn of the run loop, because a click inside the window may have closed it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel?.isVisible != true else { return }
+            self.sizeObservation = nil
+            self.panel?.contentViewController = nil
+            self.panel = nil
+            self.host = nil
+        }
+        statusItem.button?.highlight(false)
+        if let m = clickMonitor {
+            NSEvent.removeMonitor(m)
+            clickMonitor = nil
+        }
     }
 
     func refreshNotificationState() {
@@ -93,15 +175,10 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
     }
 
-    func showPopover() {
-        guard let button = statusItem.button else { return }
+    func showPanel() {
         model.launchAtLogin = SMAppService.mainApp.status == .enabled
         refreshNotificationState()
-        NSApp.activate(ignoringOtherApps: true)
-        if !popover.isShown {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        }
-        popover.contentViewController?.view.window?.makeKey()
+        openPanel(focus: true)
     }
 
     func startServer() {
@@ -158,15 +235,25 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let hub = self.hub
         let paths = self.paths
         let sampler = self.sampler
+        let writing = snapshotPath == nil
         sampleQueue.async { [weak self] in
-            let snap = sampler.sample()
+            guard let self else { return }
+            var snap = sampler.sample()
+            // trends and history are touched only on sampleQueue.
+            self.trends.apply(to: &snap)
+            self.history.append(HistoryPoint(snap))
+            if writing { self.history.write(paths: paths) }
+            let points = self.history.points
             let doc = Policy.status(snap, t, source: "app", requests: hub.pending, notes: hub.notes)
             let evaluation = Policy.evaluate(snap, t)
             hub.setStatus(doc)
-            Store.writeState(doc, paths: paths)
-            Store.appendEvent("sample", Store.sampleFields(doc), paths: paths)
+            if writing {
+                Store.writeState(doc, paths: paths)
+                Store.appendEvent("sample", Store.sampleFields(doc), paths: paths)
+            }
             DispatchQueue.main.async {
-                self?.publish(doc, evaluation)
+                self.model.history = points
+                self.publish(doc, evaluation)
             }
         }
     }
@@ -179,6 +266,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let liveSessions = Set(doc.snapshot.sessions.map(\.pid))
         model.expanded = model.expanded.intersection(liveSessions)
         updateStatusItem(doc)
+        if let path = snapshotPath {
+            openPanel(focus: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.writeSnapshot(path) }
+            return
+        }
         for alert in engine.step(doc, evaluation: e, now: doc.updatedAt) {
             notify(alert)
         }
@@ -194,11 +286,12 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         center.delegate = self
         let pause = UNNotificationAction(identifier: "PAUSE", title: "Pause heavy jobs", options: [.foreground])
         let restart = UNNotificationAction(identifier: "RESTART", title: "Restart Claude", options: [.foreground])
+        let restartCodex = UNNotificationAction(identifier: "RESTART_CODEX", title: "Restart Codex", options: [.foreground])
         let show = UNNotificationAction(identifier: "SHOW", title: "Show", options: [.foreground])
         let approve = UNNotificationAction(identifier: "APPROVE", title: "Approve", options: [.foreground])
         let deny = UNNotificationAction(identifier: "DENY", title: "Deny", options: [])
         center.setNotificationCategories([
-            UNNotificationCategory(identifier: "ALERT", actions: [pause, restart, show], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: "ALERT", actions: [pause, restart, restartCodex, show], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: "REQUEST", actions: [approve, deny, show], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: "INFO", actions: [show], intentIdentifiers: [], options: []),
         ])
@@ -248,14 +341,14 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     /// When macOS does not deliver Headroom's notifications, a crossing or an agent request opens the window
     /// under the menu bar item instead. It does not take focus from the app in front.
     func surfaceWithoutNotifications() {
-        guard model.notificationsOff, let button = statusItem.button, !popover.isShown else { return }
+        guard model.notificationsOff, panel?.isVisible != true else { return }
         Store.appendEvent("surface", ["reason": "notifications are off"], paths: paths)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        openPanel(focus: false)
     }
 
     func requestArrived(_ r: AgentRequest) {
         model.pending = hub.pending
-        let target = r.action == .restartClaude ? "Restart Claude" : "\(r.action.label) \(r.processName ?? "process") (pid \(r.pid.map(String.init) ?? "?"))"
+        let target = r.action.restarts != nil ? r.action.label : "\(r.action.label) \(r.processName ?? "process") (pid \(r.pid.map(String.init) ?? "?"))"
         post(id: "request-\(r.id)", title: "An agent asks: \(target)",
              body: r.reason + (r.from.map { "\nFrom \(Format.label(forCwd: $0))." } ?? ""), category: "REQUEST", info: ["request": r.id])
         surfaceWithoutNotifications()
@@ -274,16 +367,18 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             guard let self else { return }
             switch action {
             case "PAUSE":
-                self.showPopover()
+                self.showPanel()
                 self.pauseHeavyJobs()
             case "RESTART":
-                self.restartClaude()
+                self.restart(.claude)
+            case "RESTART_CODEX":
+                self.restart(.codex)
             case "APPROVE":
-                if let id = requestID, let r = self.hub.request(id: id), r.status == .pending { self.approve(r) } else { self.showPopover() }
+                if let id = requestID, let r = self.hub.request(id: id), r.status == .pending { self.approve(r) } else { self.showPanel() }
             case "DENY":
                 if let id = requestID, let r = self.hub.request(id: id), r.status == .pending { self.deny(r) }
             default:
-                self.showPopover()
+                self.showPanel()
             }
         }
         completionHandler()
@@ -307,8 +402,8 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         _ = confirm(title, text, buttons: ["OK"])
     }
 
-    func isSession(_ pid: Int32) -> Bool {
-        model.status?.snapshot.sessions.contains { $0.pid == pid } ?? false
+    func session(_ pid: Int32) -> AgentSession? {
+        model.status?.snapshot.sessions.first { $0.pid == pid }
     }
 
     func resampleSoon() {
@@ -348,8 +443,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     /// Asks Quit, Force quit or Cancel. Returns the action taken, nil when cancelled, and an error if any.
     func doQuit(pid: Int32, start: Double?, name: String, tree: Bool, extra: String = "") -> (ProcessControl.Action, String?)? {
         var text = "Quit asks process \(pid) to exit (SIGTERM) and lets it clean up. Force quit stops it\(tree ? " and its child processes" : "") at once (SIGKILL); it cannot save anything."
-        if isSession(pid) {
-            text += " This is a Claude Code session. Its conversation is saved on disk and can be resumed."
+        if let session = session(pid) {
+            let agent = session.app == .claude ? "Claude Code" : "Codex"
+            text += " This is a \(agent) session. Its conversation is saved on disk and can be resumed."
         }
         text += extra
         let n = confirm("Quit \(name)?", text, buttons: ["Quit", "Force quit", "Cancel"])
@@ -415,41 +511,64 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         resampleSoon()
     }
 
-    func restartClaude() {
-        _ = confirmAndRestartClaude(extra: "")
+    func restart(_ app: AgentApp) {
+        _ = confirmAndRestart(app, extra: "")
     }
 
     /// Returns nil when cancelled, else the outcome message. `confirmed` runs after the person
-    /// confirms and before Claude quits, so an agent's request is decided while the agent still runs.
-    func confirmAndRestartClaude(extra: String, confirmed: () -> Void = {}) -> String? {
-        let n = confirm("Restart Claude?",
-                        "Claude quits and opens again. Every agent session and the commands it runs stop. All agent state is on disk, so the restart loses no work and the sessions can be resumed.\(extra)",
-                        buttons: ["Restart Claude", "Cancel"])
+    /// confirms and before the app quits, so an agent's request is decided while the agent still runs.
+    /// An app that is not running is not opened: the person is told, and nil is returned.
+    func confirmAndRestart(_ app: AgentApp, extra: String, confirmed: () -> Void = {}) -> String? {
+        guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.bundleID).first else {
+            info("\(app.name) is not running", "There is no \(app.name) app to restart.\(extra)")
+            return nil
+        }
+        let bundle = running.localizedName ?? app.name
+        var text: String
+        switch app {
+        case .claude:
+            text = "Claude quits and opens again. Every agent session in the app and the commands it runs stop."
+        case .codex:
+            // On macOS the Codex app is ChatGPT.app, so a restart closes its chat windows too.
+            text = bundle == app.name
+                ? "Codex quits and opens again. Every agent thread in the app and the commands it runs stop."
+                : "\(bundle) (Codex) quits and opens again; \(bundle) chat windows close too. Every Codex thread in the app and the commands it runs stop."
+            if let s = model.status?.snapshot, let host = s.codex.hostPid, !isDescendant(host, of: running.processIdentifier) {
+                text += " The Codex app server (pid \(host)) runs apart from the app and keeps running with its memory; `codex app-server daemon restart` restarts it."
+            }
+        }
+        text += " Sessions started from a terminal keep running. All agent state is on disk, so the restart loses no work and the sessions can be resumed."
+        let n = confirm("Restart \(app == .codex && bundle != app.name ? "\(bundle) (Codex)" : app.name)?", text + extra,
+                        buttons: ["Restart \(app.name)", "Cancel"])
         guard n == 0 else { return nil }
         confirmed()
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: AppController.claudeBundleID).first else {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: AppController.claudeBundleID) {
-                NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
-                return "Claude was not running; Headroom opened it."
-            }
-            return "Claude is not installed."
-        }
-        let url = app.bundleURL
-        Store.appendEvent("action", ["action": "restart-claude", "pid": Int(app.processIdentifier), "by": "person"], paths: paths)
-        app.terminate()
-        model.message = "Waiting for Claude to quit."
-        waitForExit(app, url: url, deadline: Date().addingTimeInterval(30))
-        return "Claude is restarting."
+        let url = running.bundleURL
+        Store.appendEvent("action", ["action": "restart-\(app.rawValue)", "pid": Int(running.processIdentifier), "by": "person"], paths: paths)
+        running.terminate()
+        model.message = "Waiting for \(app.name) to quit."
+        waitForExit(running, app: app, url: url, deadline: Date().addingTimeInterval(30))
+        return "\(app.name) is restarting."
     }
 
-    func waitForExit(_ app: NSRunningApplication, url: URL?, deadline: Date) {
-        if app.isTerminated {
-            model.message = "Claude quit. Opening it again."
+    /// True when `pid` is `ancestor` or runs below it.
+    func isDescendant(_ pid: Int32, of ancestor: pid_t) -> Bool {
+        var cur = pid
+        for _ in 0..<64 {
+            if cur == ancestor { return true }
+            guard cur > 1, let info = SystemProbe.bsdInfo(cur) else { return false }
+            cur = info.ppid
+        }
+        return false
+    }
+
+    func waitForExit(_ running: NSRunningApplication, app: AgentApp, url: URL?, deadline: Date) {
+        if running.isTerminated {
+            model.message = "\(app.name) quit. Opening it again."
             if let url {
                 NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
                     DispatchQueue.main.async {
-                        self?.model.message = error.map { "Claude did not open: \($0.localizedDescription)" } ?? "Claude restarted."
-                        if let self { Store.appendEvent("action", ["action": "claude-opened", "ok": error == nil], paths: self.paths) }
+                        self?.model.message = error.map { "\(app.name) did not open: \($0.localizedDescription)" } ?? "\(app.name) restarted."
+                        if let self { Store.appendEvent("action", ["action": "\(app.rawValue)-opened", "ok": error == nil], paths: self.paths) }
                         self?.resampleSoon()
                     }
                 }
@@ -457,23 +576,23 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             return
         }
         if Date() >= deadline {
-            let n = confirm("Claude has not quit",
-                            "Claude did not quit within 30 seconds. It may be showing a dialog. Force quit stops it at once.",
-                            buttons: ["Force quit Claude", "Keep waiting", "Cancel restart"])
+            let n = confirm("\(app.name) has not quit",
+                            "\(app.name) did not quit within 30 seconds. It may be showing a dialog. Force quit stops it at once.",
+                            buttons: ["Force quit \(app.name)", "Keep waiting", "Cancel restart"])
             switch n {
             case 0:
-                Store.appendEvent("action", ["action": "force-quit-claude", "pid": Int(app.processIdentifier), "by": "person"], paths: paths)
-                app.forceTerminate()
-                waitForExit(app, url: url, deadline: Date().addingTimeInterval(15))
+                Store.appendEvent("action", ["action": "force-quit-\(app.rawValue)", "pid": Int(running.processIdentifier), "by": "person"], paths: paths)
+                running.forceTerminate()
+                waitForExit(running, app: app, url: url, deadline: Date().addingTimeInterval(15))
             case 1:
-                waitForExit(app, url: url, deadline: Date().addingTimeInterval(30))
+                waitForExit(running, app: app, url: url, deadline: Date().addingTimeInterval(30))
             default:
                 model.message = "Restart cancelled."
             }
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.waitForExit(app, url: url, deadline: deadline)
+            self?.waitForExit(running, app: app, url: url, deadline: deadline)
         }
     }
 
@@ -493,11 +612,17 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             guard let pid = r.pid else { return }
             guard let (action, error) = doQuit(pid: pid, start: r.processStart, name: r.processName ?? "process", tree: true, extra: extra) else { return }
             hub.decide(id: r.id, status: error == nil ? .approved : .failed, result: error ?? (action == .quit ? "quit (SIGTERM)" : "force quit (SIGKILL)"))
-        case .restartClaude:
-            // The request is decided before Claude quits, because the agent that asked may stop with Claude.
+        case .restartClaude, .restartCodex:
+            // The request is decided before the app quits, because the agent that asked may stop with it.
             // Cancel leaves the request pending, so the person can still approve or deny it.
-            _ = confirmAndRestartClaude(extra: extra) { [weak self] in
-                self?.hub.decide(id: r.id, status: .approved, result: "restarting Claude")
+            let app: AgentApp = r.action == .restartClaude ? .claude : .codex
+            guard !NSRunningApplication.runningApplications(withBundleIdentifier: app.bundleID).isEmpty else {
+                hub.decide(id: r.id, status: .failed, result: "\(app.name) is not running")
+                info("\(app.name) is not running", "There is no \(app.name) app to restart, so the request failed.")
+                break
+            }
+            _ = confirmAndRestart(app, extra: extra) { [weak self] in
+                self?.hub.decide(id: r.id, status: .approved, result: "restarting \(app.name)")
             }
         }
         model.pending = hub.pending
@@ -520,7 +645,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
 
     func openSettings() {
-        popover.performClose(nil)
+        closePanel()
         if let w = settingsWindow {
             NSApp.activate(ignoringOtherApps: true)
             w.makeKeyAndOrderFront(nil)
@@ -538,6 +663,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         })
         let w = NSWindow(contentViewController: NSHostingController(rootView: view))
         w.title = "Headroom Settings"
+        w.backgroundColor = Tok.nsPaper
         w.styleMask = [.titled, .closable]
         w.isReleasedWhenClosed = false
         w.center()
@@ -566,5 +692,39 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
 
     func quitHeadroom() {
         NSApp.terminate(nil)
+    }
+}
+
+/// The window under the menu bar item: square, flush with the menu bar, drawn on paper with a hair edge.
+/// It does not activate Headroom when it opens on a crossing.
+final class MenuPanel: NSPanel {
+    var onCancel: (() -> Void)?
+
+    init(content: NSViewController) {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: MainView.width, height: 400),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        contentViewController = content
+        isFloatingPanel = true
+        level = .statusBar
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        hasShadow = false
+        backgroundColor = Tok.nsPaper
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
+    }
+
+    override var canBecomeKey: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) { onCancel?() }
+}
+
+/// The live window's content: the main view with a hair edge around it.
+struct PanelRoot: View {
+    @ObservedObject var model: AppModel
+    var actions: WindowActions
+
+    var body: some View {
+        MainView(model: model, actions: actions)
+            .overlay(Rectangle().strokeBorder(Tok.hair, lineWidth: 1))
     }
 }

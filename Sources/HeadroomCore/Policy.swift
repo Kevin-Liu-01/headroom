@@ -16,13 +16,19 @@ public enum Policy {
 
     public static func evaluate(_ s: Snapshot, _ t: Thresholds) -> Evaluation {
         var reasons: [Reason] = []
-        let claude = s.claude.totalGB
-        if claude >= t.claudeCriticalGB {
-            reasons.append(Reason(check: "claude", level: .critical,
-                                  message: "Claude uses \(Format.gb(claude)), above the \(Format.gb(t.claudeCriticalGB)) critical line."))
-        } else if claude >= t.claudeWarningGB {
-            reasons.append(Reason(check: "claude", level: .hold,
-                                  message: "Claude uses \(Format.gb(claude)), above the \(Format.gb(t.claudeWarningGB)) warning line."))
+        // The combined total first, then each app with its own lines.
+        let totals: [(check: String, subject: String, gb: Double, warning: Double, critical: Double)] = [
+            ("agents", "The agents use", s.agents.totalGB, t.agentsWarningGB, t.agentsCriticalGB),
+            ("claude", "Claude uses", s.claude.totalGB, t.claudeWarningGB, t.claudeCriticalGB),
+            ("codex", "Codex uses", s.codex.totalGB, t.codexWarningGB, t.codexCriticalGB),
+        ]
+        for c in totals {
+            let what = c.check == "agents" ? "\(c.subject) \(Format.gb(c.gb)) in total" : "\(c.subject) \(Format.gb(c.gb))"
+            if c.gb >= c.critical {
+                reasons.append(Reason(check: c.check, level: .critical, message: "\(what), above the \(Format.gb(c.critical)) critical line."))
+            } else if c.gb >= c.warning {
+                reasons.append(Reason(check: c.check, level: .hold, message: "\(what), above the \(Format.gb(c.warning)) hold line."))
+            }
         }
 
         let free = Double(s.system.freePercent)
@@ -31,7 +37,7 @@ public enum Policy {
                                   message: "Free memory is \(s.system.freePercent) percent (\(Format.gb(s.system.freeGB))), below the \(Int(t.freeCriticalPercent)) percent critical line."))
         } else if free < t.freeWarningPercent {
             reasons.append(Reason(check: "free", level: .hold,
-                                  message: "Free memory is \(s.system.freePercent) percent (\(Format.gb(s.system.freeGB))), below the \(Int(t.freeWarningPercent)) percent warning line."))
+                                  message: "Free memory is \(s.system.freePercent) percent (\(Format.gb(s.system.freeGB))), below the \(Int(t.freeWarningPercent)) percent hold line."))
         }
 
         switch s.system.pressure {
@@ -52,6 +58,15 @@ public enum Policy {
         return Evaluation(advice: advice, reasons: reasons, bigProcesses: big)
     }
 
+    /// "The agents use 58.9 GB (Claude 46.8 GB, Codex 12.1 GB)." for messages that name both apps.
+    public static func totalsSentence(_ s: Snapshot) -> String {
+        let apps = AgentApp.allCases.map { app in
+            let t = s.total(app)
+            return t.pid == nil && t.totalGB == 0 ? "\(app.name) not running" : "\(app.name) \(Format.gb(t.totalGB))"
+        }
+        return "The agents use \(Format.gb(s.agents.totalGB)) (\(apps.joined(separator: ", ")))."
+    }
+
     public static func status(_ s: Snapshot, _ t: Thresholds, source: String,
                               requests: [AgentRequest] = [], notes: [AgentNote] = []) -> StatusDocument {
         let e = evaluate(s, t)
@@ -60,8 +75,8 @@ public enum Policy {
     }
 
     /// Whether an agent may start a job that needs `gb` gigabytes now.
-    /// A job is fine when the advice is ok, the free memory after it stays above the warning line,
-    /// and the Claude total after it stays below the critical line.
+    /// A job is fine when the advice is ok, the free memory after it stays above the hold line,
+    /// and the agents' total after it stays below the agents' critical line.
     public static func canStart(gb: Double, label: String?, status: StatusDocument) -> CanStart {
         let s = status.snapshot
         let t = status.thresholds
@@ -80,12 +95,12 @@ public enum Policy {
             return answer(false, "A job of \(Format.gb(gb)) needs more than the \(Format.gb(free)) that is free.")
         }
         if afterPct < t.freeWarningPercent {
-            return answer(false, String(format: "A job of %@ would leave %@ free (%.0f percent), below the %.0f percent warning line.",
+            return answer(false, String(format: "A job of %@ would leave %@ free (%.0f percent), below the %.0f percent hold line.",
                                         Format.gb(gb), Format.gb(after), afterPct, t.freeWarningPercent))
         }
-        let claudeAfter = s.claude.totalGB + gb
-        if claudeAfter >= t.claudeCriticalGB {
-            return answer(false, "A job of \(Format.gb(gb)) would bring Claude to \(Format.gb(claudeAfter)), above the \(Format.gb(t.claudeCriticalGB)) critical line.")
+        let agentsAfter = s.agents.totalGB + gb
+        if agentsAfter >= t.agentsCriticalGB {
+            return answer(false, "A job of \(Format.gb(gb)) would bring the agents to \(Format.gb(agentsAfter)), above the \(Format.gb(t.agentsCriticalGB)) critical line.")
         }
         return answer(true, String(format: "%@ free. A job of %@ leaves %@ (%.0f percent).",
                                    Format.gb(free), Format.gb(gb), Format.gb(after), afterPct))
@@ -135,7 +150,7 @@ public struct AlertEngine: Sendable {
                 if current == .ok {
                     lastAlertAt = nil
                     out.append(Alert(kind: .recovery, advice: .ok, title: "Memory recovered",
-                                     body: "Advice is back to ok after \(was.rawValue). Claude uses \(Format.gb(s.claude.totalGB)) and \(s.system.freePercent) percent of memory is free."))
+                                     body: "Advice is back to ok after \(was.rawValue). \(Policy.totalsSentence(s)) \(s.system.freePercent) percent of memory is free."))
                 } else {
                     lastAlertAt = now
                     out.append(Alert(kind: .crossing, advice: current, title: title(current, s), body: body(status, e)))
@@ -171,8 +186,8 @@ public struct AlertEngine: Sendable {
 
     func title(_ a: Advice, _ s: Snapshot) -> String {
         switch a {
-        case .critical: "Critical: Claude \(Format.gb(s.claude.totalGB)), \(s.system.freePercent)% free"
-        case .hold: "Hold: Claude \(Format.gb(s.claude.totalGB)), \(s.system.freePercent)% free"
+        case .critical: "Critical: agents \(Format.gb(s.agents.totalGB)), \(s.system.freePercent)% free"
+        case .hold: "Hold: agents \(Format.gb(s.agents.totalGB)), \(s.system.freePercent)% free"
         case .ok: "Memory is fine"
         }
     }
@@ -181,7 +196,7 @@ public struct AlertEngine: Sendable {
         let s = status.snapshot
         var lines: [String] = []
         if let r = e.reasons.first { lines.append(r.message) }
-        let sessions = s.sessions.prefix(3).map { "\($0.label) \(Format.gb($0.totalGB))" }
+        let sessions = s.sessions.prefix(3).map { "\($0.app.name) \($0.label) \(Format.gb($0.totalGB))" }
         if !sessions.isEmpty { lines.append("Sessions: " + sessions.joined(separator: ", ") + ".") }
         let procs = s.largest.prefix(3).map { p in "\(p.name)\(p.session.map { " (\($0))" } ?? "") \(Format.gb(p.gb))" }
         if !procs.isEmpty { lines.append("Processes: " + procs.joined(separator: ", ") + ".") }

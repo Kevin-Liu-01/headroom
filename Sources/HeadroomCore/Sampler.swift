@@ -20,8 +20,9 @@ public final class Sampler: @unchecked Sendable {
 
     public init() {}
 
-    /// Reads every process. Arguments are read only for interpreters, and working directories
-    /// only for agent sessions, because those are the only places they are used.
+    /// Reads every process. Arguments are read only for interpreters and agent binaries, and working directories
+    /// only for agent sessions and the direct children of a Codex app server, because those are the only places
+    /// they are used.
     public func readProcesses() -> [Proc] {
         lock.lock()
         defer { lock.unlock() }
@@ -45,14 +46,15 @@ public final class Sampler: @unchecked Sendable {
             guard var entry = c else { continue }
             let name = entry.path.contains("/") ? (entry.path as NSString).lastPathComponent : info.name
             let mine = info.uid == myUid
-            if mine, !entry.argsRead, HeavyClassifier.needsArgs(name: name) || entry.path.contains("claude-code/") {
+            if mine, !entry.argsRead, HeavyClassifier.needsArgs(name: name) || entry.path.contains("claude-code/")
+                || name == "codex" || name.hasPrefix("codex-") {
                 entry.args = SystemProbe.args(pid)
                 entry.argsRead = true
             }
             var proc = Proc(pid: pid, ppid: info.ppid, name: name, path: entry.path, startTime: info.startTime,
                             footprint: SystemProbe.footprint(pid) ?? 0, cwd: nil, args: entry.args,
                             stopped: info.stopped, uid: info.uid)
-            if mine, Attribution.isAgentSession(proc) {
+            if mine, Attribution.sessionApp(proc) != nil {
                 // A session's directory rarely changes; read it at most once a minute.
                 if entry.cwdRead == nil || now.timeIntervalSince(entry.cwdRead!) > 60 {
                     entry.cwd = SystemProbe.cwd(pid)
@@ -62,6 +64,20 @@ public final class Sampler: @unchecked Sendable {
             }
             cache[pid] = entry
             procs.append(proc)
+        }
+        // A Codex app server runs each thread's commands in the thread's folder, so its children's folders
+        // name the threads.
+        let hosts = Set(procs.filter(Attribution.isCodexHost).map(\.pid))
+        if !hosts.isEmpty {
+            for i in procs.indices where (hosts.contains(procs[i].ppid) || hosts.contains(procs[i].pid)) && procs[i].uid == myUid && procs[i].cwd == nil {
+                guard var entry = cache[procs[i].pid] else { continue }
+                if entry.cwdRead == nil || now.timeIntervalSince(entry.cwdRead!) > 60 {
+                    entry.cwd = SystemProbe.cwd(procs[i].pid)
+                    entry.cwdRead = now
+                    cache[procs[i].pid] = entry
+                }
+                procs[i].cwd = entry.cwd
+            }
         }
         cache = cache.filter { alive.contains($0.key) }
         lastSkipped = skipped
@@ -75,9 +91,11 @@ public final class Sampler: @unchecked Sendable {
     }
 
     /// Builds a snapshot from processes and system numbers. Pure, so tests can call it.
-    public static func snapshot(procs: [Proc], system: SystemStats, time: Date, skipped: Int = 0) -> Snapshot {
-        let result = Attribution(procs: procs).attribute()
-        return Snapshot(time: time, system: system, claude: result.claude, sessions: result.sessions,
+    public static func snapshot(procs: [Proc], system: SystemStats, time: Date, skipped: Int = 0,
+                                bundleID: @escaping (String) -> String? = BundleIDs.shared.identifier) -> Snapshot {
+        let result = Attribution(procs: procs, bundleID: bundleID).attribute()
+        return Snapshot(time: time, system: system, claude: result.claude, codex: result.codex, agents: result.agents,
+                        sessions: result.sessions,
                         heavyJobs: result.heavyJobs, apps: result.apps, largest: result.largest,
                         processCount: procs.count + skipped, unreadableCount: skipped + procs.filter { $0.footprint == 0 }.count)
     }

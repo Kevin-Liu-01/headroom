@@ -11,12 +11,19 @@ final class AppModel: ObservableObject {
     /// The window shows the first rows of each list until the person asks for all of them,
     /// so the heavy jobs stay in view when many sessions run.
     @Published var showAllSessions = false
+    @Published var showAllCodex = false
     @Published var showAllJobs = false
+    /// The last 60 minutes of samples for the chart.
+    @Published var history: [HistoryPoint] = []
+    /// The scroll area's height limit, set from the screen the window opens on.
+    @Published var maxContentHeight: CGFloat = 560
     @Published var launchAtLogin = false
     @Published var apiError: String?
     @Published var message: String?
     /// True when macOS does not let Headroom post notifications.
     @Published var notificationsOff = false
+    /// The clock for relative times. The demo render pins it, so both themes say the same thing.
+    var fixedNow: Date?
 }
 
 /// The window's buttons. The app performs them with confirmations; the renderer ignores them.
@@ -26,7 +33,7 @@ protocol WindowActions: AnyObject {
     func quit(pid: Int32, start: Double, name: String, tree: Bool)
     func pauseHeavyJobs()
     func resumePaused()
-    func restartClaude()
+    func restart(_ app: AgentApp)
     func approve(_ r: AgentRequest)
     func deny(_ r: AgentRequest)
     func openLog()
@@ -42,7 +49,7 @@ final class NoActions: WindowActions {
     func quit(pid: Int32, start: Double, name: String, tree: Bool) {}
     func pauseHeavyJobs() {}
     func resumePaused() {}
-    func restartClaude() {}
+    func restart(_ app: AgentApp) {}
     func approve(_ r: AgentRequest) {}
     func deny(_ r: AgentRequest) {}
     func openLog() {}
@@ -52,20 +59,3 @@ final class NoActions: WindowActions {
     func quitHeadroom() {}
 }
 
-extension Advice {
-    var color: Color {
-        switch self {
-        case .ok: Color(red: 0.20, green: 0.70, blue: 0.35)
-        case .hold: Color(red: 0.95, green: 0.62, blue: 0.10)
-        case .critical: Color(red: 0.90, green: 0.22, blue: 0.20)
-        }
-    }
-
-    var nsColor: NSColor {
-        switch self {
-        case .ok: NSColor(red: 0.20, green: 0.70, blue: 0.35, alpha: 1)
-        case .hold: NSColor(red: 0.95, green: 0.62, blue: 0.10, alpha: 1)
-        case .critical: NSColor(red: 0.90, green: 0.22, blue: 0.20, alpha: 1)
-        }
-    }
-}

@@ -73,14 +73,14 @@ public final class Hub: @unchecked Sendable {
     public enum RequestError: Error, Equatable { case invalid(String) }
 
     public func addRequest(action: RequestAction, pid: Int32?, reason: String, from: String?, now: Date = Date()) throws -> AgentRequest {
-        if action != .restartClaude {
+        if action.restarts == nil {
             guard let pid else { throw RequestError.invalid("pid is required for \(action.rawValue)") }
             guard pid > 1, pid != getpid() else { throw RequestError.invalid("pid \(pid) cannot be targeted") }
         }
         var name: String?
         if let pid {
             name = processName(pid)
-            if name == nil, action != .restartClaude { throw RequestError.invalid("no process with pid \(pid)") }
+            if name == nil, action.restarts == nil { throw RequestError.invalid("no process with pid \(pid)") }
         }
         let trimmed = String(reason.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
         guard !trimmed.isEmpty else { throw RequestError.invalid("reason is required") }
@@ -205,7 +205,7 @@ public struct APIRouter: Sendable {
                 return .error(400, "body must be JSON with action and reason")
             }
             guard let action = RequestAction(rawValue: body.action) else {
-                return .error(400, "action must be one of pause, resume, quit, restart-claude")
+                return .error(400, "action must be one of \(RequestAction.names)")
             }
             do {
                 return .json(try hub.addRequest(action: action, pid: body.pid, reason: body.reason, from: body.from), status: 201)

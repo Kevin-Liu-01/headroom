@@ -5,7 +5,7 @@ import HeadroomCore
 // The headroom command line tool. It works without the app: reads fall back to a direct sample.
 
 let usage = """
-headroom: memory awareness for agents on this Mac.
+headroom: memory awareness for Claude and Codex agents on this Mac.
 
 Usage:
   headroom status [--json]                 Memory state and advice (ok, hold, critical).
@@ -15,12 +15,14 @@ Usage:
                                            Wait until a job of N GB may start. Exit 75 after M minutes (default 30).
   headroom note TEXT [--gb N] [--label X] [--pid P]
                                            Announce a heavy job to the person.
-  headroom request --action pause|resume|quit|restart-claude [--pid P] --reason TEXT [--wait [--timeout M]]
+  headroom request --action pause|resume|quit|restart-claude|restart-codex [--pid P] --reason TEXT [--wait [--timeout M]]
                                            Ask the person to approve an action.
+  headroom history [--all] [--json]        The agents' memory over the last 60 minutes, one row per minute.
   headroom events [--follow] [-n N]        Print the event log.
-  headroom hook                            Claude Code PreToolUse handler for Bash (reads hook JSON on stdin).
+  headroom hook [--codex]                  PreToolUse handler for Bash (reads hook JSON on stdin).
+                                           Claude Code by default; --codex for Codex.
   headroom mcp                             Run the stdio MCP server (tools: status, can_start, note, request).
-  headroom install-hook --print            Print the settings.json hook snippet and the MCP config.
+  headroom install-hook --print            Print the hook and MCP configuration for Claude Code and Codex.
   headroom doctor                          Check the app, the files, the API and the hook setup.
 
 Environment:
@@ -82,35 +84,56 @@ func ago(_ d: Date) -> String {
     return "\(s / 3600) h ago"
 }
 
+func trend(_ gb: Double?) -> String {
+    Format.change(gb, minus: "-")
+}
+
+/// "38.4 GB in 142 processes (app 37.2 GB, terminals 1.2 GB)", or "not running".
+func appTotalText(_ t: AgentTotal) -> String {
+    if !t.appRunning && t.totalGB == 0 { return "not running" }
+    var parts: [String] = []
+    if t.appRunning { parts.append("app \(Format.gb(t.appGB ?? t.totalGB))") } else { parts.append("app not running") }
+    if t.terminalGB > 0 { parts.append("terminals \(Format.gb(t.terminalGB))") }
+    return "\(Format.gb(t.totalGB)) in \(t.processCount) processes (\(parts.joined(separator: ", ")))"
+}
+
 func printStatus(_ d: StatusDocument) {
     let s = d.snapshot
     out("Advice      \(d.advice.title.uppercased()). \(d.guidance)")
-    out("Claude      \(Format.gb(s.claude.totalGB)) in \(s.claude.processCount) processes")
+    out("Agents      \(Format.gb(s.agents.totalGB)) in \(s.agents.processCount) processes")
+    for app in AgentApp.allCases {
+        let t = s.total(app)
+        out("\(pad(app.name, 11)) \(appTotalText(t))")
+    }
     out("Free        \(s.system.freePercent)% (\(Format.gb(s.system.freeGB)) of \(Format.gb(s.system.totalGB)))")
     out("Swap        \(Format.gb(s.system.swapUsedGB)) used, compressed \(Format.gb(s.system.compressedGB)), pressure \(s.system.pressure.rawValue)")
     if !d.reasons.isEmpty {
         out("")
         for r in d.reasons { out("  [\(r.level.rawValue)] \(r.message)") }
     }
-    if !s.sessions.isEmpty {
+    for app in AgentApp.allCases {
+        let list = s.sessions(of: app)
+        guard !list.isEmpty else { continue }
         out("")
-        out("Agent sessions")
-        for x in s.sessions.prefix(12) {
-            out("  \(pad(x.label, 28)) \(pad(Format.gb(x.totalGB), 9)) \(pad("\(x.processCount) proc", 9)) pid \(x.pid)  \(Format.shortPath(x.cwd))")
+        out(pad("\(app.name) sessions", 31) + pad("memory", 10) + pad("10 min", 10) + "processes")
+        for x in list.prefix(12) {
+            let place = x.inApp ? "" : "  terminal"
+            let who = x.pid < 0 ? "app thread" : "pid \(x.pid)"
+            out("  \(pad(x.label, 28)) \(pad(Format.gb(x.totalGB), 9)) \(pad(trend(x.trendGB), 9)) \(pad("\(x.processCount) proc", 9)) \(who)  \(Format.shortPath(x.cwd))\(place)")
         }
     }
     if !s.heavyJobs.isEmpty {
         out("")
         out("Heavy jobs")
         for j in s.heavyJobs.prefix(10) {
-            let owner = j.session.map { "  session \($0)" } ?? ""
+            let owner = j.session.map { "  \(j.app?.name ?? "") session \($0)" } ?? ""
             out("  \(pad(j.kind.label, 11)) \(pad(j.name, 34)) \(pad(Format.gb(j.totalGB), 9)) pid \(j.pid)\(j.stopped ? " (paused)" : "")\(owner)")
         }
     }
     out("")
     out("Largest processes")
     for p in s.largest.prefix(8) {
-        let owner = p.session.map { "  session \($0)" } ?? ""
+        let owner = p.session.map { "  \(p.app?.name ?? "") session \($0)" } ?? ""
         out("  \(pad(p.name, 34)) \(pad(Format.gb(p.gb), 9)) pid \(p.pid)\(p.stopped ? " (paused)" : "")\(owner)")
     }
     if !d.pendingRequests.isEmpty {
@@ -120,6 +143,25 @@ func printStatus(_ d: StatusDocument) {
     }
     out("")
     out("Source: \(d.source == "app" ? "Headroom app" : "direct sample"), \(ago(d.updatedAt)).")
+}
+
+func printHistory(_ h: History, all: Bool) {
+    let rows = all ? h.points : h.perMinute()
+    guard let last = h.points.last else {
+        out("No history yet. The Headroom app records the last 60 minutes in \(client.paths.history.path).")
+        return
+    }
+    let peak = h.points.max { $0.agents < $1.agents } ?? last
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    out("Agents now \(Format.gb(last.agents)), peak \(Format.gb(peak.agents)) at \(f.string(from: peak.time)), \(h.points.count) sample\(h.points.count == 1 ? "" : "s") over \(Int((last.t - (h.points.first?.t ?? last.t)) / 60)) min.")
+    out("")
+    out(pad("time", 10) + pad("agents", 11) + pad("claude", 11) + pad("codex", 11) + "free")
+    let top = max(peak.agents, 1)
+    for p in rows {
+        let bar = String(repeating: "#", count: Int((p.agents / top * 24).rounded()))
+        out("\(f.string(from: p.time))  \(pad(Format.gb(p.agents), 10)) \(pad(Format.gb(p.claude), 10)) \(pad(Format.gb(p.codex), 10)) \(pad("\(p.free)%", 5)) \(bar)")
+    }
 }
 
 func cliPath() -> String {
@@ -202,7 +244,7 @@ case "note":
 case "request":
     let a = Args(rest, valued: ["action", "pid", "reason", "timeout"])
     guard let actionName = a.options["action"] ?? a.positional.first, let action = RequestAction(rawValue: actionName) else {
-        fail("request needs --action pause|resume|quit|restart-claude")
+        fail("request needs --action \(RequestAction.allCases.map(\.rawValue).joined(separator: "|"))")
     }
     guard let reason = a.options["reason"], !reason.isEmpty else { fail("request needs --reason TEXT") }
     do {
@@ -224,6 +266,11 @@ case "request":
     } catch {
         fail("\(error)")
     }
+
+case "history":
+    let a = Args(rest, valued: [])
+    let h = History.read(paths: client.paths)
+    if a.flags.contains("json") { out(JSON.string(h.points, pretty: true)) } else { printHistory(h, all: a.flags.contains("all")) }
 
 case "events":
     let a = Args(rest, valued: ["n"])
@@ -250,11 +297,12 @@ case "events":
 
 case "hook":
     // Fails open: any problem means no output and exit 0, so the command runs as usual.
+    let agent: Hook.Agent = Args(rest, valued: []).flags.contains("codex") ? .codex : .claudeCode
     let input = FileHandle.standardInput.readDataToEndOfFile()
-    let decision = Hook.decide(input: input) { try? client.status() }
+    let decision = Hook.decide(input: input, agent: agent) { try? client.status() }
     if let d = decision, let data = Hook.render(d) {
         FileHandle.standardOutput.write(data + Data("\n".utf8))
-        Store.appendEvent("hook", ["advice": d.advice.rawValue, "kind": d.match.kind.rawValue,
+        Store.appendEvent("hook", ["agent": agent.rawValue, "advice": d.advice.rawValue, "kind": d.match.kind.rawValue,
                                    "command": String(d.command.prefix(200))], paths: client.paths)
     }
     exit(0)
@@ -266,10 +314,12 @@ case "mcp":
 case "install-hook":
     let a = Args(rest, valued: [])
     guard a.flags.contains("print") else {
-        fail("install-hook only prints the configuration (use --print); Headroom does not edit Claude settings", code: 2)
+        fail("install-hook only prints the configuration (use --print); Headroom does not edit Claude or Codex settings", code: 2)
     }
     let path = cliPath()
     out("""
+    Claude Code
+
     Add this to ~/.claude/settings.json (merge it into an existing "hooks" object):
 
     {
@@ -289,7 +339,27 @@ case "install-hook":
 
       claude mcp add --scope user headroom -- \(path) mcp
 
-    or put this in an MCP configuration file:
+    Codex
+
+    Add this to ~/.codex/config.toml. Codex asks you to review a new hook with /hooks before it runs it.
+
+    [mcp_servers.headroom]
+    command = "\(path)"
+    args = ["mcp"]
+
+    [[hooks.PreToolUse]]
+    matcher = "^Bash$"
+
+    [[hooks.PreToolUse.hooks]]
+    type = "command"
+    command = "\(path) hook --codex"
+    timeout = 5
+
+    Or add the MCP server with the Codex CLI:
+
+      codex mcp add headroom -- \(path) mcp
+
+    Any other MCP client takes this configuration:
 
     {
       "mcpServers": {
@@ -329,13 +399,28 @@ case "doctor":
     let sample = Sampler().sample()
     let ms = Int(Date().timeIntervalSince(t0) * 1000)
     line(true, "direct sample: \(sample.processCount) processes in \(ms) ms (\(sample.unreadableCount) owned by other users are not readable)")
+    for app in AgentApp.allCases {
+        let t = sample.total(app)
+        let n = sample.sessions(of: app).count
+        let where_ = t.pid.map { "\(app.name) app pid \($0)" } ?? "\(app.name) app is not running"
+        let host = t.hostPid.map { "; app server pid \($0)" } ?? ""
+        info("\(where_)\(host); \(app.name) agents use \(appTotalText(t)); \(n) session\(n == 1 ? "" : "s")")
+    }
     let settingsText = (try? String(contentsOfFile: NSHomeDirectory() + "/.claude/settings.json", encoding: .utf8)) ?? ""
     info(settingsText.contains("headroom hook")
-         ? "the PreToolUse hook is in ~/.claude/settings.json"
+         ? "the Claude Code PreToolUse hook is in ~/.claude/settings.json"
          : "the hook is not in ~/.claude/settings.json; see headroom install-hook --print")
     let claudeJSON = (try? String(contentsOfFile: NSHomeDirectory() + "/.claude.json", encoding: .utf8)) ?? ""
     let hasMCP = claudeJSON.contains("headroom mcp") || claudeJSON.contains("\"headroom\"")
-    info(hasMCP ? "an MCP server named headroom is configured" : "no headroom MCP server in ~/.claude.json; see headroom install-hook --print")
+    info(hasMCP ? "an MCP server named headroom is configured for Claude Code" : "no headroom MCP server in ~/.claude.json; see headroom install-hook --print")
+    let codexConfig = (try? String(contentsOfFile: NSHomeDirectory() + "/.codex/config.toml", encoding: .utf8)) ?? ""
+    info(codexConfig.contains("[mcp_servers.headroom]")
+         ? "an MCP server named headroom is in ~/.codex/config.toml"
+         : "no headroom MCP server in ~/.codex/config.toml; see headroom install-hook --print")
+    let codexHooks = codexConfig + ((try? String(contentsOfFile: NSHomeDirectory() + "/.codex/hooks.json", encoding: .utf8)) ?? "")
+    info(codexHooks.contains("hook --codex")
+         ? "the Codex PreToolUse hook is configured"
+         : "the Codex hook is not in ~/.codex/config.toml or hooks.json; see headroom install-hook --print")
     exit(problems == 0 ? 0 : 1)
 
 case "help", "--help", "-h":

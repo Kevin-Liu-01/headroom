@@ -22,8 +22,9 @@ public enum HeavyClassifier {
         let lpath = path.lowercased()
         let argText = (args ?? []).dropFirst().joined(separator: " ").lowercased()
 
-        // Claude's own Electron helpers are part of the Claude total, not jobs.
+        // The agent apps' own Electron helpers are part of their app totals, not jobs.
         if lpath.contains("/claude.app/") && !lpath.contains("claude-code/") { return nil }
+        if lpath.contains("/chatgpt.app/") || lpath.contains("/codex.app/") { return nil }
 
         if lpath.contains("ms-playwright") || lpath.contains("puppeteer") || lower.contains("chrome-headless-shell")
             || lower == "google chrome" || lower == "google chrome for testing" || lower == "chromium"

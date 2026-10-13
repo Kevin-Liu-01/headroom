@@ -82,7 +82,7 @@ struct APITests {
         let hub = makeHub()
         let router = APIRouter(hub: hub, token: token)
         let created = router.handle(req("POST", "/v1/requests",
-                                        body: #"{"action":"pause","pid":4242,"reason":"ffmpeg is at 30 GB","from":"/x/gt-cloud"}"#, token: token))
+                                        body: #"{"action":"pause","pid":4242,"reason":"ffmpeg is at 30 GB","from":"/x/web-app"}"#, token: token))
         #expect(created.status == 201)
         let id = try #require(json(created)["id"] as? String)
         #expect(json(created)["status"] as? String == "pending")

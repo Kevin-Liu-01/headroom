@@ -14,13 +14,20 @@ public enum Format {
         (value * 100).rounded() / 100
     }
 
-    /// The last path component of a working directory, or "unknown".
-    public static func label(forCwd cwd: String?) -> String {
-        guard let cwd, !cwd.isEmpty else { return "unknown" }
-        if cwd == "/" { return "/" }
+    /// The last path component of a working directory. The home folder is "Home folder"; the root folder, or
+    /// no folder, gives the process name when there is one.
+    public static func label(forCwd cwd: String?, process: String? = nil) -> String {
+        guard let cwd, !cwd.isEmpty, cwd != "/" else { return process ?? (cwd == "/" ? "/" : "unknown") }
         let home = NSHomeDirectory()
-        if cwd == home { return "~" }
+        if cwd == home || cwd == "~" { return "Home folder" }
         return (cwd as NSString).lastPathComponent
+    }
+
+    /// A change in memory: "+1.2 GB", "\u{2212}340 MB", or "0 MB" for no change.
+    public static func change(_ gb: Double?, minus: String = "\u{2212}") -> String {
+        guard let gb else { return "" }
+        if abs(gb) < 0.005 { return "0 MB" }
+        return (gb > 0 ? "+" : minus) + Format.gb(abs(gb))
     }
 
     /// A path with the home directory written as ~.

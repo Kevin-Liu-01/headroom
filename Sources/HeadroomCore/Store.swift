@@ -19,6 +19,7 @@ public struct Paths: Sendable {
     public var events: URL { dir.appendingPathComponent("events.jsonl") }
     public var settings: URL { dir.appendingPathComponent("settings.json") }
     public var token: URL { dir.appendingPathComponent("token") }
+    public var history: URL { dir.appendingPathComponent("history.jsonl") }
 
     public static let port: UInt16 = 7341
 
@@ -126,14 +127,17 @@ public enum Store {
         let s = doc.snapshot
         return [
             "advice": doc.advice.rawValue,
+            "agentsGB": s.agents.totalGB,
             "claudeGB": s.claude.totalGB,
             "claudeProcesses": s.claude.processCount,
+            "codexGB": s.codex.totalGB,
+            "codexProcesses": s.codex.processCount,
             "freePercent": s.system.freePercent,
             "freeGB": s.system.freeGB,
             "swapUsedGB": s.system.swapUsedGB,
             "compressedGB": s.system.compressedGB,
             "pressure": s.system.pressure.rawValue,
-            "sessions": s.sessions.prefix(3).map { ["label": $0.label, "gb": $0.totalGB, "pid": Int($0.pid)] as [String: Any] },
+            "sessions": s.sessions.prefix(3).map { ["app": $0.app.rawValue, "label": $0.label, "gb": $0.totalGB, "pid": Int($0.pid)] as [String: Any] },
             "largest": s.largest.prefix(3).map { ["name": $0.name, "gb": $0.gb, "pid": Int($0.pid)] as [String: Any] },
             "reasons": doc.reasons.map(\.message),
         ]
