@@ -26,6 +26,8 @@ Usage:
   headroom doctor                          Check the app, the files, the API and the hook setup.
   headroom guard [status]                  The runaway guard: its mode, its rules and its recent stops.
   headroom guard arm | observe             Stop runaway processes, or only log what would be stopped.
+  headroom guard set KEY=VALUE ...         Change the guard's limits, such as growthFloorGB=20 or
+                                           gentlePatterns=/scratchpad/i22,/scratchpad/i23. Settings edits them too.
   headroom guard install | uninstall       Run the guard at login with launchd (com.kevinliu.headroom.guard).
   headroom guard run [--armed|--observe]   Run the guard in the foreground; launchd runs this.
 
@@ -457,6 +459,34 @@ case "guard":
         r.armed = sub == "arm"
         GuardStore.saveRules(r, paths: gp)
         out(r.armed ? "The guard now stops runaway processes (within 10 s if it is running)." : "The guard now only logs what it would stop.")
+    case "set":
+        let pairs = Array(rest.dropFirst())
+        if pairs.isEmpty { fail("guard set needs KEY=VALUE pairs, such as growthFloorGB=20; keys are listed in guard.json") }
+        let current = GuardStore.loadRules(paths: gp)
+        guard let data = try? JSONEncoder().encode(current),
+              var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { fail("could not read the guard rules") }
+        for kv in pairs {
+            guard let eq = kv.firstIndex(of: "=") else { fail("expected KEY=VALUE, got \(kv)") }
+            let k = String(kv[..<eq]), v = String(kv[kv.index(after: eq)...])
+            guard dict[k] != nil else { fail("unknown limit \(k); known: \(dict.keys.sorted().joined(separator: ", "))") }
+            switch k {
+            case "armed":
+                guard let b = ["true": true, "yes": true, "on": true, "1": true, "false": false, "no": false, "off": false, "0": false][v.lowercased()] else { fail("armed takes true or false") }
+                dict[k] = b
+            case "gentlePatterns":
+                dict[k] = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            default:
+                guard let d = Double(v), d.isFinite else { fail("\(k) takes a number, got \(v)") }
+                dict[k] = d
+            }
+        }
+        guard let merged = try? JSONSerialization.data(withJSONObject: dict),
+              let rules = try? JSONDecoder().decode(GuardRules.self, from: merged) else { fail("could not apply the change") }
+        let saved = rules.validated()
+        GuardStore.saveRules(saved, paths: gp)
+        Store.appendEvent("settings", ["guard": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(saved))) ?? NSNull(), "by": "cli"], paths: gp)
+        out("Saved. The running guard picks it up within 10 s.")
+        out(JSON.string(saved, pretty: true))
     case "install":
         let program = cliPath()
         let logPath = NSHomeDirectory() + "/Library/Logs/headroom-guard.log"
@@ -493,7 +523,7 @@ case "guard":
         out("            below \(Int(r.lowFreePercent))% free, the fastest grower over \(Format.gb(r.lowFreeMinGB)).")
         out("            Never the Claude or Codex apps, agent sessions, apps you opened, system or other users' processes.")
         if !r.gentlePatterns.isEmpty {
-            out("Gentle      \(r.gentlePatterns.joined(separator: ", ")): stopped only alone, past 16 GB, never as a job or for low memory.")
+            out("Gentle      \(r.gentlePatterns.joined(separator: ", ")): stopped only alone, past \(Format.gb(r.growthFloorGB)), never as a job or for low memory.")
         }
         if let text = try? String(contentsOf: gp.events, encoding: .utf8) {
             let lines = text.split(separator: "\n").filter { $0.contains("\"type\":\"guard\"") && !$0.contains("\"action\":\"start\"") }

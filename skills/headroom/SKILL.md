@@ -79,6 +79,7 @@ It never stops the Claude or Codex apps, agent sessions, apps the person opened,
 | `headroom events [--follow]` | The event log: samples, alerts, requests |
 | `headroom doctor` | Check the app, the files, the API and the hook setup |
 | `headroom guard status` | Whether the runaway guard runs, its rules, the fastest growers and its recent stops |
+| `headroom guard set KEY=VALUE` | Change a guard limit (the person's call; ask before changing it) |
 
 The same data is at `http://127.0.0.1:7341/v1/status` and `/v1/can-start?gb=N`. `headroom mcp` is a stdio MCP server with the tools status, can_start, note and request. `headroom install-hook --print` prints the Claude Code hook and the MCP configuration. The person decides whether to install them, so do not edit `~/.claude` or `~/.codex` configuration yourself.
 

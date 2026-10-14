@@ -65,7 +65,7 @@ Headroom watches three totals: all agents together, the Claude agents and the Co
 | hold | The agents, Claude or Codex reach their hold line, free memory is below 30 percent, or the system reports memory pressure. | Agents start nothing new that is heavy. |
 | critical | The agents, Claude or Codex reach their critical line, free memory is below 15 percent, or the system reports critical pressure. | Pause heavy jobs and restart Claude or Codex, whichever holds more memory. All agent state is on disk, so a restart of the app loses no work. |
 
-The settings window changes every line. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI, the hooks and the MCP server use the same lines as the app.
+The settings window changes every line, and its second column changes the runaway guard: its mode, every limit and the gentle patterns. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI, the hooks and the MCP server use the same lines as the app; the guard's limits are stored in `guard.json` beside it.
 
 Headroom posts a notification each time the advice gets worse. The notification names the largest sessions with their apps and the largest processes, and offers four buttons: Pause heavy jobs, Restart Claude, Restart Codex and Show. While the advice stays at hold or critical, the notification repeats every 5 minutes. When the advice returns to ok for three samples in a row, Headroom posts a recovery note. Headroom also posts a notification each time a single process crosses another 16 GB step.
 
@@ -129,6 +129,7 @@ headroom guard install          # run the guard at login with launchd (com.kevin
 headroom guard status           # running or not, the mode, the rules, the fastest growers, recent stops
 headroom guard arm              # stop runaways
 headroom guard observe          # only log and announce what would be stopped
+headroom guard set growthFloorGB=20 leakWindowSeconds=180   # change limits; Settings edits them too
 headroom guard uninstall
 ```
 
@@ -140,7 +141,7 @@ The rules live in `guard.json` beside the other files, and a missing key keeps i
   "gentlePatterns": ["/scratchpad/i223"] }
 ```
 
-The guard rereads the file every 10 seconds. A pass over about 650 processes and jobs takes 15 to 20 ms, so the guard uses about 1 percent of one core and 14 MB. It runs apart from the app, so it keeps working when the window is closed or the app hangs.
+The Settings window and `headroom guard set` both write this file, and the guard rereads it every 10 seconds. A pass over about 650 processes and jobs takes 15 to 20 ms, so the guard uses about 1 percent of one core and 14 MB. It runs apart from the app, so it keeps working when the window is closed or the app hangs.
 
 ## How agents use it
 

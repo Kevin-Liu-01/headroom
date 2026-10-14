@@ -660,7 +660,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             self.sampleNow()
         }, close: { [weak self] in
             self?.settingsWindow?.close()
-        })
+        }, g: GuardStore.loadRules(paths: paths), saveGuard: { [weak self] g in
+            guard let self else { return }
+            GuardStore.saveRules(g, paths: self.paths)
+            Store.appendEvent("settings", ["guard": (try? JSONSerialization.jsonObject(with: JSON.encoder().encode(g))) ?? NSNull()], paths: self.paths)
+        }, guardStatus: AppController.guardStatusLine(paths: paths))
         let w = NSWindow(contentViewController: NSHostingController(rootView: view))
         w.title = "Headroom Settings"
         w.backgroundColor = Tok.nsPaper
@@ -673,6 +677,14 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
+    }
+
+    /// "The guard runs (pid 4306, 12 ms a pass)." or how to start it.
+    static func guardStatusLine(paths: Paths) -> String {
+        if let st = GuardStore.readState(paths: paths), st.isFresh() {
+            return "The guard runs (pid \(st.pid), \(Int(st.tickMilliseconds.rounded())) ms a pass)."
+        }
+        return "The guard is not running; start it with headroom guard install."
     }
 
     func setLaunchAtLogin(_ on: Bool) {
