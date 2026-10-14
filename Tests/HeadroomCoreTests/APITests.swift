@@ -110,6 +110,19 @@ struct APITests {
         #expect(router.handle(req("GET", "/v1/requests/nope")).status == 404)
     }
 
+    @Test func aRequestExpiresWhenItsProcessExits() throws {
+        final class Box: @unchecked Sendable { var start: Double? = 100 }
+        let box = Box()
+        let hub = makeHub()
+        hub.processStart = { _ in box.start }
+        let r = try hub.addRequest(action: .quit, pid: 4242, reason: "idle dev server", from: nil)
+        #expect(hub.pending.count == 1)
+        box.start = 250 // the pid now names another process
+        #expect(hub.pending.isEmpty)
+        #expect(hub.request(id: r.id)?.status == .expired)
+        #expect(hub.request(id: r.id)?.result == "The process exited before anyone decided.")
+    }
+
     @Test func pendingRequestsExpire() {
         let hub = makeHub()
         let r = try? hub.addRequest(action: .pause, pid: 4242, reason: "old", from: nil, now: Date().addingTimeInterval(-3600))

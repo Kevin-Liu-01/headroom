@@ -40,10 +40,20 @@ public final class Hub: @unchecked Sendable {
 
     private func pendingLocked(now: Date = Date()) -> [AgentRequest] {
         for id in order {
-            if var r = requests[id], r.status == .pending, now.timeIntervalSince(r.createdAt) > Hub.requestLifetime {
+            guard var r = requests[id], r.status == .pending else { continue }
+            if now.timeIntervalSince(r.createdAt) > Hub.requestLifetime {
                 r.status = .expired
                 r.decidedAt = now
                 requests[id] = r
+            } else if let pid = r.pid, let started = r.processStart {
+                // A request about a process that has exited, or whose pid now names another process, is moot.
+                let current = processStart(pid)
+                if current == nil || abs(current! - started) > 1 {
+                    r.status = .expired
+                    r.decidedAt = now
+                    r.result = "The process exited before anyone decided."
+                    requests[id] = r
+                }
             }
         }
         return order.compactMap { requests[$0] }.filter { $0.status == .pending }
