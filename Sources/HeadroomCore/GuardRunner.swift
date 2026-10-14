@@ -82,6 +82,10 @@ public final class GuardRunner {
         var r = GuardStore.loadRules(paths: paths)
         if let forceArmed { r.armed = forceArmed }
         engine = GuardEngine(rules: r)
+        engine.describe = { p in
+            ((SystemProbe.args(p.pid) ?? []) + [SystemProbe.cwd(p.pid) ?? ""])
+                .joined(separator: "\n")
+        }
     }
 
     public func run() -> Never {

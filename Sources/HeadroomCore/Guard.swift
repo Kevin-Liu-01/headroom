@@ -36,17 +36,23 @@ public struct GuardRules: Codable, Equatable, Sendable {
     public var cooldownSeconds: Double
     /// Seconds between SIGTERM and SIGKILL.
     public var graceSeconds: Double
+    /// Text that marks a process as gentle when its command line or working directory contains it, such as a
+    /// deploy gate's folder. A gentle process is never stopped as part of a job or by the low-memory rule; only on
+    /// its own, by the growth, ceiling or leak rule. (macOS does not show other processes' environments, so the
+    /// mark cannot come from an environment variable.)
+    public var gentlePatterns: [String]
 
     public static let defaults = GuardRules(
         armed: false, intervalSeconds: 1, windowSeconds: 5, growthGBPerSecond: 1, growthFloorGB: 16,
         ceilingGB: 64, ceilingGrowthGBPerSecond: 0.1, leakFloorGB: 32, leakGainGB: 8, leakWindowSeconds: 120,
         lowFreePercent: 10, lowFreeMinGB: 2,
-        lowFreeMinGrowthGBPerSecond: 0.05, cooldownSeconds: 2, graceSeconds: 1)
+        lowFreeMinGrowthGBPerSecond: 0.05, cooldownSeconds: 2, graceSeconds: 1, gentlePatterns: [])
 
     public init(armed: Bool, intervalSeconds: Double, windowSeconds: Double, growthGBPerSecond: Double,
                 growthFloorGB: Double, ceilingGB: Double, ceilingGrowthGBPerSecond: Double, leakFloorGB: Double,
                 leakGainGB: Double, leakWindowSeconds: Double, lowFreePercent: Double,
-                lowFreeMinGB: Double, lowFreeMinGrowthGBPerSecond: Double, cooldownSeconds: Double, graceSeconds: Double) {
+                lowFreeMinGB: Double, lowFreeMinGrowthGBPerSecond: Double, cooldownSeconds: Double, graceSeconds: Double,
+                gentlePatterns: [String] = []) {
         self.armed = armed
         self.intervalSeconds = intervalSeconds
         self.windowSeconds = windowSeconds
@@ -62,6 +68,7 @@ public struct GuardRules: Codable, Equatable, Sendable {
         self.lowFreeMinGrowthGBPerSecond = lowFreeMinGrowthGBPerSecond
         self.cooldownSeconds = cooldownSeconds
         self.graceSeconds = graceSeconds
+        self.gentlePatterns = gentlePatterns
     }
 
     public init(from decoder: Decoder) throws {
@@ -82,6 +89,7 @@ public struct GuardRules: Codable, Equatable, Sendable {
         lowFreeMinGrowthGBPerSecond = try c.decodeIfPresent(Double.self, forKey: .lowFreeMinGrowthGBPerSecond) ?? d.lowFreeMinGrowthGBPerSecond
         cooldownSeconds = try c.decodeIfPresent(Double.self, forKey: .cooldownSeconds) ?? d.cooldownSeconds
         graceSeconds = try c.decodeIfPresent(Double.self, forKey: .graceSeconds) ?? d.graceSeconds
+        gentlePatterns = try c.decodeIfPresent([String].self, forKey: .gentlePatterns) ?? d.gentlePatterns
     }
 
     /// Clamps every value into a range where the guard still behaves sensibly.
@@ -105,6 +113,7 @@ public struct GuardRules: Codable, Equatable, Sendable {
         r.lowFreeMinGrowthGBPerSecond = clamp(lowFreeMinGrowthGBPerSecond, 0.001, 100, d.lowFreeMinGrowthGBPerSecond)
         r.cooldownSeconds = clamp(cooldownSeconds, 0, 600, d.cooldownSeconds)
         r.graceSeconds = clamp(graceSeconds, 0, 30, d.graceSeconds)
+        r.gentlePatterns = gentlePatterns.filter { !$0.isEmpty }
         return r
     }
 }
@@ -181,7 +190,12 @@ public final class GuardEngine {
     public var watching: Int { lastUnits.count }
     /// Whether each process may be stopped and whether it is an agent session or app server, which only changes
     /// with the process itself, so the string checks run once per process instead of once a second.
-    private var classes: [Int32: (start: Double, ppid: Int32, stoppable: Bool, owner: Bool)] = [:]
+    private var classes: [Int32: (start: Double, ppid: Int32, stoppable: Bool, owner: Bool, gentle: Bool)] = [:]
+    private var classesPatterns: [String] = []
+    /// The text a process is matched against for `gentlePatterns`: its arguments and working directory. Tests use the default, which reads the Proc's own fields; the runner reads them from the system.
+    public var describe: (Proc) -> String = { p in ((p.args ?? []) + [p.cwd ?? ""]).joined(separator: "\n") }
+    /// Pids of gentle processes in the last sample.
+    private var gentlePids = Set<Int32>()
 
     public init(rules: GuardRules, myUid: UInt32 = getuid(), myPid: Int32 = getpid()) {
         self.rules = rules.validated()
@@ -196,19 +210,32 @@ public final class GuardEngine {
         let tree = Attribution(procs: procs, bundleID: { _ in nil })
         var stoppable: [Int32: Proc] = [:]
         var owners: [Proc] = []
-        var next: [Int32: (start: Double, ppid: Int32, stoppable: Bool, owner: Bool)] = [:]
+        var next: [Int32: (start: Double, ppid: Int32, stoppable: Bool, owner: Bool, gentle: Bool)] = [:]
         next.reserveCapacity(procs.count)
+        if classesPatterns != rules.gentlePatterns {
+            classes = [:]
+            classesPatterns = rules.gentlePatterns
+        }
+        var gentle = Set<Int32>()
         for p in procs {
             var c = classes[p.pid]
             if c == nil || c!.start != p.startTime || c!.ppid != p.ppid {
                 let owner = Attribution.isAgentSession(p) || Attribution.codexRole(p).map({ $0 == .session || $0 == .host }) == true
-                c = (p.startTime, p.ppid, GuardProtection.reason(p, myUid: myUid, myPid: myPid) == nil, owner)
+                let canStop = GuardProtection.reason(p, myUid: myUid, myPid: myPid) == nil
+                var isGentle = false
+                if canStop, !rules.gentlePatterns.isEmpty {
+                    let text = describe(p)
+                    isGentle = rules.gentlePatterns.contains(where: { text.contains($0) })
+                }
+                c = (p.startTime, p.ppid, canStop, owner, isGentle)
             }
             next[p.pid] = c
             if c!.stoppable { stoppable[p.pid] = p }
             if c!.owner { owners.append(p) }
+            if c!.gentle { gentle.insert(p.pid) }
         }
         classes = next
+        gentlePids = gentle
         var out: [GuardUnit] = []
         out.reserveCapacity(stoppable.count + 16)
         for p in stoppable.values where p.footprint > 0 {
@@ -219,7 +246,8 @@ public final class GuardEngine {
             for child in tree.children[owner.pid] ?? [] {
                 guard let top = stoppable[child] else { continue }
                 let members = tree.subtree(child).filter { stoppable[$0.pid] != nil }
-                guard members.count >= 2 else { continue }
+                // A job with a gentle process in it is never stopped as a whole.
+                guard members.count >= 2, !members.contains(where: { gentle.contains($0.pid) }) else { continue }
                 let bytes = members.reduce(UInt64(0)) { $0 + $1.footprint }
                 out.append(GuardUnit(kind: .job, key: GuardUnitKey(job: true, pid: top.pid, start: top.startTime), root: top.pid,
                                      rootStart: top.startTime, pids: members.map(\.pid).reversed(), bytes: bytes,
@@ -305,7 +333,7 @@ public final class GuardEngine {
                     rule: .leak, unit: u, rateGBPerSecond: leak.gain / leak.span,
                     reason: "gained \(Format.gb(leak.gain)) in \(Int(leak.span / 60)) min to \(Format.gb(gb)) and is still climbing"))
             }
-            if g.span >= 2 * rules.intervalSeconds - 0.01, gb >= rules.lowFreeMinGB, g.rate >= rules.lowFreeMinGrowthGBPerSecond {
+            if !gentlePids.contains(u.root), g.span >= 2 * rules.intervalSeconds - 0.01, gb >= rules.lowFreeMinGB, g.rate >= rules.lowFreeMinGrowthGBPerSecond {
                 growers.append((u, g.rate))
             }
         }

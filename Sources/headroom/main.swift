@@ -492,6 +492,9 @@ case "guard":
         out("            or keeps growing past \(Format.gb(r.ceilingGB)), or gains \(Format.gb(r.leakGainGB)) in \(Int(r.leakWindowSeconds / 60)) min past \(Format.gb(r.leakFloorGB));")
         out("            below \(Int(r.lowFreePercent))% free, the fastest grower over \(Format.gb(r.lowFreeMinGB)).")
         out("            Never the Claude or Codex apps, agent sessions, apps you opened, system or other users' processes.")
+        if !r.gentlePatterns.isEmpty {
+            out("Gentle      \(r.gentlePatterns.joined(separator: ", ")): stopped only alone, past 16 GB, never as a job or for low memory.")
+        }
         if let text = try? String(contentsOf: gp.events, encoding: .utf8) {
             let lines = text.split(separator: "\n").filter { $0.contains("\"type\":\"guard\"") && !$0.contains("\"action\":\"start\"") }
             if !lines.isEmpty { out(""); out("Recent guard events") }

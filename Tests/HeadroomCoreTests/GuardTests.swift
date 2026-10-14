@@ -178,6 +178,50 @@ struct GuardTests {
         #expect(r?.decision.unit.root == 52)
     }
 
+    // MARK: gentle processes
+
+    static func gentleEngine() -> GuardEngine { engine { $0.gentlePatterns = ["/scratchpad/i223"] } }
+
+    @Test func stillStopsAGentleRunawayOnItsOwn() {
+        // A deploy gate's receipt that really runs away is stopped, but alone.
+        let r = Self.run(Self.gentleEngine(), seconds: 30) { t in
+            [Self.proc(200, ppid: 1000, name: "zsh", path: "/bin/zsh", gb: 0.01, args: ["zsh", "/tmp/x/scratchpad/i223/gate.sh"]),
+             Self.proc(201, ppid: 200, name: "node", gb: 2 * Double(t), args: ["node", "receipt.mjs"])]
+        }
+        #expect(r?.decision.unit.kind == .process)
+        #expect(r?.decision.unit.root == 201)
+    }
+
+    @Test func neverStopsAJobWithAGentleProcessInIt() {
+        // A gate's pool of 20 workers that each grow a little is not stopped as a job.
+        let r = Self.run(Self.gentleEngine(), seconds: 30) { t in
+            [Self.proc(200, ppid: 1000, name: "zsh", path: "/bin/zsh", gb: 0.01, args: ["zsh", "/tmp/x/scratchpad/i223/gate.sh"])]
+                + (0..<20).map { i in Self.proc(Int32(300 + i), ppid: 200, name: "node", gb: 0.5 + 0.1 * Double(t)) }
+        }
+        #expect(r == nil)
+    }
+
+    @Test func lowMemorySkipsGentleProcesses() {
+        let e = Self.engine { $0.gentlePatterns = ["/scratchpad/i224"] }
+        let r = Self.run(e, seconds: 10, free: { _ in 7 }) { t in [
+            Self.proc(10, name: "node", gb: 5 + 0.5 * Double(t), args: ["node", "/x/scratchpad/i224/pool.mjs"]),
+            Self.proc(11, name: "ffmpeg", gb: 3 + 0.1 * Double(t)),
+        ] }
+        #expect(r?.decision.rule == .lowMemory)
+        #expect(r?.decision.unit.root == 11)
+    }
+
+    @Test func matchesTheWorkingDirectory() {
+        // A receipt started from the gate's folder, with nothing in its arguments, is gentle by its cwd.
+        let e = Self.engine { $0.gentlePatterns = ["/scratchpad/i223"] }
+        let r = Self.run(e, seconds: 10, free: { _ in 7 }) { t in [
+            Proc(pid: 10, ppid: 1000, name: "node", path: "/opt/homebrew/bin/node", startTime: 100,
+                 footprint: Self.bytes(5 + 0.5 * Double(t)), cwd: "/tmp/x/scratchpad/i223/run", args: ["node", "r.mjs"], uid: Self.me),
+            Self.proc(11, name: "ffmpeg", gb: 3 + 0.1 * Double(t)),
+        ] }
+        #expect(r?.decision.unit.root == 11)
+    }
+
     // MARK: bookkeeping
 
     @Test func waitsOutTheCooldownBetweenStops() {
@@ -210,6 +254,7 @@ struct GuardTests {
         #expect(r.growthFloorGB == 24)
         #expect(r.windowSeconds == GuardRules.defaults.windowSeconds)
         #expect(r.ceilingGB == 64)
+        #expect(r.gentlePatterns.isEmpty)
     }
 
     @Test func rulesAreClamped() {

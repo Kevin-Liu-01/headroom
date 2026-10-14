@@ -54,6 +54,7 @@ It never stops the Claude or Codex apps, agent sessions, apps the person opened,
 
 ## Never on your own
 
+- Never stop processes with `pkill` or `killall` and a pattern. Record the PID when you start a process, check it with `ps -o pid,command -p <pid>`, and `kill <pid>`. On macOS, `pkill` stops reading options at the first pattern, so `pkill -f "x" -U 501` also matches every command line that contains "-U" or "501". On 2026-10-13 two such commands killed other sessions' multi-hour deploy gates and background waiters. If pkill is unavoidable, put every option first and run `pgrep -fl` with the same arguments before it.
 - Do not kill, pause or quit a process that you did not start, even when Headroom shows it as the largest.
 - To ask for it, run `headroom request --action pause|quit|resume|restart-claude|restart-codex --pid P --reason "one sentence"`. The person approves or denies it in the window. Add `--wait` to block until he answers.
 - Your own process is yours to stop.

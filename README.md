@@ -112,6 +112,8 @@ On 2026-10-13 an agent ran a `git grep` with a 130-word pattern and no `-I` over
 
 The floors keep ordinary work alone: a 14 GB model that loads at 3.5 GB a second, a dev server that creeps up to 25 GB, a build that climbs to 9 GB over a minute, and a large process that maps 8 GB at once and then holds steady are all left running. When a job fires but one process inside it accounts for most of the growth, the guard stops that process alone, not the shell and the siblings around it.
 
+Some work is costly to lose, such as a deploy gate that takes hours. `gentlePatterns` in `guard.json` lists text such as `/scratchpad/i223`; a process whose command line or working directory contains it is gentle. The guard never stops a job that holds a gentle process and never picks a gentle process under the low-memory rule. It still stops a gentle process on its own when it crosses the growth, ceiling or leak rule, because a single process that runs away past 16 GB takes everything else down with it. macOS does not show other processes' environments, so the mark cannot come from an environment variable.
+
 A stop sends SIGTERM and, one second later, SIGKILL to whatever is still alive, after checking that each pid still names the process that was sampled. After a stop the guard waits 2 seconds before it stops anything else. It never stops:
 
 - the Claude app and its helpers, or a Claude Code session;
@@ -134,7 +136,8 @@ The rules live in `guard.json` beside the other files, and a missing key keeps i
 
 ```json
 { "armed": true, "growthGBPerSecond": 1, "windowSeconds": 5, "growthFloorGB": 16, "ceilingGB": 64,
-  "leakFloorGB": 32, "leakGainGB": 8, "leakWindowSeconds": 120, "lowFreePercent": 10, "cooldownSeconds": 2 }
+  "leakFloorGB": 32, "leakGainGB": 8, "leakWindowSeconds": 120, "lowFreePercent": 10, "cooldownSeconds": 2,
+  "gentlePatterns": ["/scratchpad/i223"] }
 ```
 
 The guard rereads the file every 10 seconds. A pass over about 650 processes and jobs takes 15 to 20 ms, so the guard uses about 1 percent of one core and 14 MB. It runs apart from the app, so it keeps working when the window is closed or the app hangs.
