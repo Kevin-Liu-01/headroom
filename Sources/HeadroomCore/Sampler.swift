@@ -6,6 +6,9 @@ public final class Sampler: @unchecked Sendable {
     private struct Cached {
         var start: Double
         var path: String
+        var name: String
+        /// Whether the process is an agent session; read once, after its arguments.
+        var session: Bool?
         var args: [String]?
         var argsRead: Bool
         var cwd: String?
@@ -41,10 +44,12 @@ public final class Sampler: @unchecked Sendable {
             var c = cache[pid]
             if c == nil || c!.start != info.startTime {
                 let path = SystemProbe.path(pid) ?? info.name
-                c = Cached(start: info.startTime, path: path, args: nil, argsRead: false, cwd: nil, cwdRead: nil)
+                let name = path.contains("/") ? (path as NSString).lastPathComponent : info.name
+                c = Cached(start: info.startTime, path: path, name: name, session: nil, args: nil, argsRead: false,
+                           cwd: nil, cwdRead: nil)
             }
             guard var entry = c else { continue }
-            let name = entry.path.contains("/") ? (entry.path as NSString).lastPathComponent : info.name
+            let name = entry.name
             let mine = info.uid == myUid
             if mine, !entry.argsRead, HeavyClassifier.needsArgs(name: name) || entry.path.contains("claude-code/")
                 || name == "codex" || name.hasPrefix("codex-") {
@@ -54,7 +59,8 @@ public final class Sampler: @unchecked Sendable {
             var proc = Proc(pid: pid, ppid: info.ppid, name: name, path: entry.path, startTime: info.startTime,
                             footprint: SystemProbe.footprint(pid) ?? 0, cwd: nil, args: entry.args,
                             stopped: info.stopped, uid: info.uid)
-            if mine, Attribution.sessionApp(proc) != nil {
+            if mine, entry.session == nil { entry.session = Attribution.sessionApp(proc) != nil }
+            if mine, entry.session == true {
                 // A session's directory rarely changes; read it at most once a minute.
                 if entry.cwdRead == nil || now.timeIntervalSince(entry.cwdRead!) > 60 {
                     entry.cwd = SystemProbe.cwd(pid)

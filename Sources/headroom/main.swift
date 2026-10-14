@@ -24,6 +24,10 @@ Usage:
   headroom mcp                             Run the stdio MCP server (tools: status, can_start, note, request).
   headroom install-hook --print            Print the hook and MCP configuration for Claude Code and Codex.
   headroom doctor                          Check the app, the files, the API and the hook setup.
+  headroom guard [status]                  The runaway guard: its mode, its rules and its recent stops.
+  headroom guard arm | observe             Stop runaway processes, or only log what would be stopped.
+  headroom guard install | uninstall       Run the guard at login with launchd (com.kevinliu.headroom.guard).
+  headroom guard run [--armed|--observe]   Run the guard in the foreground; launchd runs this.
 
 Environment:
   HEADROOM_HOME                            Use another folder than ~/Library/Application Support/Headroom.
@@ -406,6 +410,11 @@ case "doctor":
         let host = t.hostPid.map { "; app server pid \($0)" } ?? ""
         info("\(where_)\(host); \(app.name) agents use \(appTotalText(t)); \(n) session\(n == 1 ? "" : "s")")
     }
+    if let st = GuardStore.readState(paths: p), st.isFresh() {
+        line(true, "the runaway guard runs (pid \(st.pid), \(st.armed ? "armed" : "observing"), \(st.tickMilliseconds) ms a pass)")
+    } else {
+        line(false, "the runaway guard is not running; headroom guard install")
+    }
     let settingsText = (try? String(contentsOfFile: NSHomeDirectory() + "/.claude/settings.json", encoding: .utf8)) ?? ""
     info(settingsText.contains("headroom hook")
          ? "the Claude Code PreToolUse hook is in ~/.claude/settings.json"
@@ -422,6 +431,75 @@ case "doctor":
          ? "the Codex PreToolUse hook is configured"
          : "the Codex hook is not in ~/.codex/config.toml or hooks.json; see headroom install-hook --print")
     exit(problems == 0 ? 0 : 1)
+
+case "guard":
+    let sub = rest.first ?? "status"
+    let a = Args(Array(rest.dropFirst()), valued: [])
+    let gp = client.paths
+    let label = "com.kevinliu.headroom.guard"
+    let plist = NSHomeDirectory() + "/Library/LaunchAgents/\(label).plist"
+    func launchctl(_ args: [String]) -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return -1 }
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+    switch sub {
+    case "run":
+        let force: Bool? = a.flags.contains("armed") ? true : (a.flags.contains("observe") ? false : nil)
+        GuardRunner(paths: gp, forceArmed: force).run()
+    case "arm", "observe":
+        var r = GuardStore.loadRules(paths: gp)
+        r.armed = sub == "arm"
+        GuardStore.saveRules(r, paths: gp)
+        out(r.armed ? "The guard now stops runaway processes (within 10 s if it is running)." : "The guard now only logs what it would stop.")
+    case "install":
+        let program = cliPath()
+        let logPath = NSHomeDirectory() + "/Library/Logs/headroom-guard.log"
+        let dict: [String: Any] = [
+            "Label": label, "ProgramArguments": [program, "guard", "run"], "RunAtLoad": true, "KeepAlive": true,
+            "ProcessType": "Interactive", "StandardOutPath": logPath, "StandardErrorPath": logPath,
+        ]
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0) else { fail("could not write the plist") }
+        try? FileManager.default.createDirectory(atPath: (plist as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        do { try data.write(to: URL(fileURLWithPath: plist), options: .atomic) } catch { fail("could not write \(plist): \(error)") }
+        _ = launchctl(["bootout", "gui/\(getuid())/\(label)"])
+        let rc = launchctl(["bootstrap", "gui/\(getuid())", plist])
+        if rc != 0 { fail("launchctl bootstrap failed (\(rc)) for \(plist)") }
+        let r = GuardStore.loadRules(paths: gp)
+        out("The guard runs at login from \(program) (\(r.armed ? "armed: it stops runaways" : "observing: it only logs")). Log: \(logPath)")
+    case "uninstall":
+        _ = launchctl(["bootout", "gui/\(getuid())/\(label)"])
+        try? FileManager.default.removeItem(atPath: plist)
+        out("The guard no longer runs at login.")
+    case "status":
+        let r = GuardStore.loadRules(paths: gp)
+        let installed = FileManager.default.fileExists(atPath: plist)
+        if let st = GuardStore.readState(paths: gp), st.isFresh() {
+            out("Guard       running, pid \(st.pid), \(st.armed ? "ARMED: stops runaways" : "observing: logs what it would stop")")
+            out("            \(st.watching) units, \(st.tickMilliseconds) ms a pass, free \(st.freePercent)%, \(st.stops) stops since \(ago(st.startedAt))")
+            if let last = st.lastStop { out("Last        \(last)") }
+            for g in st.fastest { out("  growing   \(pad(g.name, 28)) pid \(g.pid)  \(Format.gb(g.gb))  +\(Format.gb(g.rateGBPerSecond))/s") }
+        } else {
+            out("Guard       not running\(installed ? " (installed; launchd should restart it)" : "; run headroom guard install")")
+        }
+        out("Mode        \(r.armed ? "armed" : "observe") (guard.json)")
+        out("Rules       stop a process or an agent's command that grows \(Format.gb(r.growthGBPerSecond))/s for \(Int(r.windowSeconds)) s past \(Format.gb(r.growthFloorGB)),")
+        out("            or keeps growing past \(Format.gb(r.ceilingGB)), or gains \(Format.gb(r.leakGainGB)) in \(Int(r.leakWindowSeconds / 60)) min past \(Format.gb(r.leakFloorGB));")
+        out("            below \(Int(r.lowFreePercent))% free, the fastest grower over \(Format.gb(r.lowFreeMinGB)).")
+        out("            Never the Claude or Codex apps, agent sessions, apps you opened, system or other users' processes.")
+        if let text = try? String(contentsOf: gp.events, encoding: .utf8) {
+            let lines = text.split(separator: "\n").filter { $0.contains("\"type\":\"guard\"") && !$0.contains("\"action\":\"start\"") }
+            if !lines.isEmpty { out(""); out("Recent guard events") }
+            for l in lines.suffix(5) { out("  " + String(l.prefix(400))) }
+        }
+    default:
+        fail("unknown guard command \(sub); see headroom help")
+    }
 
 case "help", "--help", "-h":
     out(usage)

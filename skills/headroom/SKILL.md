@@ -5,7 +5,7 @@ description: Check this Mac's memory before adding load, and respect what Headro
 
 # Headroom
 
-A Mac that runs many Claude Code and Codex sessions at once can run out of application memory, because the Claude and Codex apps own every process their sessions start. Headroom shows every agent the memory state so no agent adds load blindly. It never stops a process on its own: every stop is the person's click.
+A Mac that runs many Claude Code and Codex sessions at once can run out of application memory, because the Claude and Codex apps own every process their sessions start. Headroom shows every agent the memory state so no agent adds load blindly. Agents never stop processes they did not start. Only Headroom's runaway guard stops processes on its own, and only processes whose memory spirals.
 
 ## Before heavy work
 
@@ -34,6 +34,24 @@ Heavy work is any of the following:
 
 `headroom status` prints the advice, the Claude and Codex totals, free memory, every agent session with its working directory, and the heavy jobs. Codex runs in the ChatGPT app (bundle id com.openai.codex) and as `codex` CLI sessions. Headroom counts both, and each app's total includes its terminal sessions. `headroom status --json` gives the same data to a script.
 
+## The runaway guard
+
+The runaway guard is a background process (`headroom guard`) that samples every process once a second. When it is armed, it stops a process, or an agent's whole command, whose memory spirals:
+
+- It grows 1 GB a second or more for 5 seconds and holds 16 GB or more.
+- It holds more than 64 GB and is still growing.
+- It holds more than 32 GB and gained 8 GB or more over 2 minutes, climbing all the way.
+- Free memory is below 10 percent: the fastest-growing process of 2 GB or more.
+
+It never stops the Claude or Codex apps, agent sessions, apps the person opened, system processes or other users' processes. When your command dies with exit code 143 (SIGTERM) or 137 (SIGKILL), run `headroom guard status` to see whether the guard stopped it and why. Fix the cause before you run it again; do not just retry.
+
+## Keep bulk commands bounded
+
+- Search for many literal strings with `rg -F -l -f patterns.txt`, or `git grep -I -F -f patterns.txt --threads 4`. Never build one huge `-E` alternation: on 2026-10-13 `git grep -l -E` with 130 names ORed together and no `-I` grew to 166 GB in under a minute.
+- Always pass `-I` to `git grep` and `grep -r`, so binary files are skipped.
+- Cap node with `--max-old-space-size=4096` (or `NODE_OPTIONS`) and give long scripts a timeout, so a leak fails in its own process. macOS does not enforce `ulimit -v`.
+- Run a command of unknown cost on a small sample first.
+
 ## Never on your own
 
 - Do not kill, pause or quit a process that you did not start, even when Headroom shows it as the largest.
@@ -42,7 +60,8 @@ Heavy work is any of the following:
 
 ## Workflows and parallel agents
 
-- Cap concurrency. Run research or review fan-outs through a pool of at most 5 agents, and heavy trials 2 at a time. - Keep one dev server per session, and stop it as soon as its check is done.
+- Cap concurrency. Run research or review fan-outs through a pool of at most 5 agents, and heavy trials 2 at a time.
+- Keep one dev server per session, and stop it as soon as its check is done.
 - Run browser-driving or build agents one at a time.
 - In a torch environment on MPS, set `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.35` and `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.3`. That caps the MPS allocator near 37 GB, and a runaway model then fails in its own process.
 
@@ -58,6 +77,7 @@ Heavy work is any of the following:
 | `headroom history [--json]` | The agents' memory over the last 60 minutes |
 | `headroom events [--follow]` | The event log: samples, alerts, requests |
 | `headroom doctor` | Check the app, the files, the API and the hook setup |
+| `headroom guard status` | Whether the runaway guard runs, its rules, the fastest growers and its recent stops |
 
 The same data is at `http://127.0.0.1:7341/v1/status` and `/v1/can-start?gb=N`. `headroom mcp` is a stdio MCP server with the tools status, can_start, note and request. `headroom install-hook --print` prints the Claude Code hook and the MCP configuration. The person decides whether to install them, so do not edit `~/.claude` or `~/.codex` configuration yourself.
 

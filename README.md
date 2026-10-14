@@ -2,7 +2,7 @@
 
 ![The macOS Force Quit dialog after the system ran out of application memory, with Claude at 237.35 GB](docs/out-of-memory.png)
 
-Headroom is a macOS menu bar app that watches memory use by the Claude and Codex desktop apps, their agent sessions and every process those sessions start. It alerts the person at the Mac when memory runs low, relays the current memory state to agents through a file, a local HTTP API, a command line tool, hooks for Claude Code and Codex, and an MCP server, and carries out actions only when a person clicks them. Headroom never pauses, stops or kills a process on its own.
+Headroom is a macOS menu bar app that watches memory use by the Claude and Codex desktop apps, their agent sessions and every process those sessions start. It alerts the person at the Mac when memory runs low, relays the current memory state to agents through a file, a local HTTP API, a command line tool, hooks for Claude Code and Codex, and an MCP server, and carries out actions when a person clicks them. One part acts on its own: the runaway guard, a small background process that samples every process once a second and stops one whose memory spirals faster than a person can react. The guard starts in observe mode, where it only logs and announces what it would stop.
 
 ## Screenshots
 
@@ -97,6 +97,48 @@ The footer has Restart Claude, Restart Codex and Settings, then icon buttons for
 
 The window does not take focus from the app in front when it opens on a crossing. A click outside the window or the Escape key closes it.
 
+## Runaway guard
+
+On 2026-10-13 an agent ran a `git grep` with a 130-word pattern and no `-I` over a repository with binary assets. It grew from 42.6 GB to 166 GB in about 55 seconds, roughly 2 GB a second, on a Mac with 128 GB. The app alerted at every 16 GB step, but at that speed a person has seconds, not minutes. The guard covers that case.
+
+`headroom guard run` reads every process's physical footprint once a second (`proc_pid_rusage`, the number Activity Monitor shows, which includes compressed memory) and watches two kinds of units: each process, and each command an agent ran together with its children, so a swarm of workers that each grow a little counts as one job. It stops a unit when one of these rules holds:
+
+| Rule | When | Default |
+| --- | --- | --- |
+| growth | The unit grew at least 1 GB a second through the last 5 seconds, with at least 4 of the 5 one-second steps up, and holds at least 16 GB. | 1 GB/s, 5 s, 16 GB |
+| ceiling | The unit holds more than 64 GB and grew over the last 5 seconds. | 64 GB |
+| leak | The unit holds more than 32 GB and gained at least 8 GB over the last 2 minutes, with most 10-second steps up. | 32 GB, 8 GB, 2 min |
+| low-memory | Free memory is below 10 percent: the fastest-growing unit of at least 2 GB. | 10 % |
+
+The floors keep ordinary work alone: a 14 GB model that loads at 3.5 GB a second, a dev server that creeps up to 25 GB, a build that climbs to 9 GB over a minute, and a large process that maps 8 GB at once and then holds steady are all left running. When a job fires but one process inside it accounts for most of the growth, the guard stops that process alone, not the shell and the siblings around it.
+
+A stop sends SIGTERM and, one second later, SIGKILL to whatever is still alive, after checking that each pid still names the process that was sampled. After a stop the guard waits 2 seconds before it stops anything else. It never stops:
+
+- the Claude app and its helpers, or a Claude Code session;
+- the Codex app (ChatGPT.app) or a `codex` process;
+- an app the person opened, such as Google Chrome or a terminal (its helper processes, such as a runaway browser tab, can be stopped);
+- launchd, WindowServer and processes under `/System`, `/usr/libexec`, `/usr/sbin` and `/sbin`;
+- another user's processes, or Headroom itself.
+
+Every decision becomes a `guard` event in `events.jsonl` with the rule, the process, its size and growth, the command line, and the agent session that owns it, and a notification names the same. A stopped command shows the agent exit code 143 (SIGTERM) or 137 (SIGKILL); `headroom guard status` says why.
+
+```sh
+headroom guard install          # run the guard at login with launchd (com.kevinliu.headroom.guard)
+headroom guard status           # running or not, the mode, the rules, the fastest growers, recent stops
+headroom guard arm              # stop runaways
+headroom guard observe          # only log and announce what would be stopped
+headroom guard uninstall
+```
+
+The rules live in `guard.json` beside the other files, and a missing key keeps its default:
+
+```json
+{ "armed": true, "growthGBPerSecond": 1, "windowSeconds": 5, "growthFloorGB": 16, "ceilingGB": 64,
+  "leakFloorGB": 32, "leakGainGB": 8, "leakWindowSeconds": 120, "lowFreePercent": 10, "cooldownSeconds": 2 }
+```
+
+The guard rereads the file every 10 seconds. A pass over about 650 processes and jobs takes 15 to 20 ms, so the guard uses about 1 percent of one core and 14 MB. It runs apart from the app, so it keeps working when the window is closed or the app hangs.
+
 ## How agents use it
 
 Headroom gives agents five ways to read the memory state. All five agree, because they read the same state and use the same policy.
@@ -121,6 +163,7 @@ headroom request --action pause --pid 4242 --reason "ffmpeg is at 30 GB" --wait
 headroom history                # the last 60 minutes, one row per minute
 headroom events --follow
 headroom doctor
+headroom guard status           # the runaway guard: mode, rules, fastest growers, recent stops
 ```
 
 `can-start` answers yes when the advice is ok, the free memory after the job stays above the hold line, and the agents' total after the job stays below the critical line. `history --all` prints every sample and `history --json` prints the points as JSON. `wait` checks every 10 seconds and exits with code 75 when the timeout passes. `request --wait` exits 0 when the person approves and 1 when the person denies.
@@ -250,7 +293,7 @@ The window exists only while it is open. Closing it releases its views, so a clo
 
 ## Privacy
 
-Everything stays on the Mac. Headroom makes no network requests beyond its own API on `127.0.0.1`. The HTTP API listens only on `127.0.0.1`, rejects requests whose Host header names another machine, and needs a token for every POST. The state, the settings, the token and the log are files in `~/Library/Application Support/Headroom` that only the person's account can read. Headroom reads process paths, the arguments of interpreters such as node and python and of `codex` processes, the working directories of agent sessions and of the Codex app server's direct children, and the `Info.plist` of app bundles named ChatGPT or Codex to find the Codex app. `headroom doctor` reads `~/.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml` and `~/.codex/hooks.json` to report whether the hooks and the MCP server are set up, and changes none of them. The log holds process names, pids, session folder names, agent notes and the first 200 characters of each command the hook flags. It never holds file contents.
+Everything stays on the Mac. Headroom makes no network requests beyond its own API on `127.0.0.1`. The HTTP API listens only on `127.0.0.1`, rejects requests whose Host header names another machine, and needs a token for every POST. The state, the settings, the token and the log are files in `~/Library/Application Support/Headroom` that only the person's account can read. Headroom reads process paths, the arguments of interpreters such as node and python and of `codex` processes, the working directories of agent sessions and of the Codex app server's direct children, and the `Info.plist` of app bundles named ChatGPT or Codex to find the Codex app. `headroom doctor` reads `~/.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml` and `~/.codex/hooks.json` to report whether the hooks and the MCP server are set up, and changes none of them. The log holds process names, pids, session folder names, agent notes and the first 200 characters of each command the hook flags, and the first 400 characters of the command line of each process the guard stops or would stop. It never holds file contents.
 
 ## License
 

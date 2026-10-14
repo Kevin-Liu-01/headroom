@@ -1,6 +1,7 @@
 import Foundation
 
-/// Turns a snapshot into advice. Headroom only advises; it never acts on its own.
+/// Turns a snapshot into advice. The advice never acts on its own; only the runaway guard (Guard.swift) stops
+/// processes without a click, and only processes whose memory spirals.
 public enum Policy {
     public struct Evaluation: Equatable, Sendable {
         public var advice: Advice

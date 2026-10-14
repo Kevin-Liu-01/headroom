@@ -16,7 +16,7 @@ public struct ClientError: Error, CustomStringConvertible {
 /// A stdio MCP server (JSON-RPC 2.0, one message per line) with the tools status, can_start, note and request.
 public struct MCPServer {
     public let client: HeadroomClient
-    public static let version = "1.1.0"
+    public static let version = "1.2.0"
 
     public init(client: HeadroomClient) {
         self.client = client

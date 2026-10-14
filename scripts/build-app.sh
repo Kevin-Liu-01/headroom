@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 echo "==> swift build -c release"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)"
