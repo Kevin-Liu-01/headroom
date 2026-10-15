@@ -150,7 +150,7 @@ public enum SessionRescue {
         let person = l.unread.filter { $0.kind == .person }
         md.append("## The person's unread messages (\(person.count))")
         md.append("")
-        if person.isEmpty { md.append("None.") }
+        if person.isEmpty { md.append(contentsOf: ["None.", ""]) }
         for m in person {
             md.append("- \(m.time.map(Format.iso) ?? "unknown time"):")
             md.append("")
@@ -190,7 +190,7 @@ public enum SessionRescue {
         let others = l.unread.filter { $0.kind != .person }
         md.append("## Undelivered messages from agents, sessions and tasks (\(others.count))")
         md.append("")
-        if others.isEmpty { md.append("None.") }
+        if others.isEmpty { md.append(contentsOf: ["None.", ""]) }
         for m in others {
             md.append("### \(m.kind.rawValue), \(m.time.map(Format.iso) ?? "unknown time")")
             md.append("")
