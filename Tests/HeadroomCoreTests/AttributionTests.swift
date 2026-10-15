@@ -25,6 +25,8 @@ struct AttributionTests {
         #expect(result.sessions[0].inApp)
         #expect(!result.sessions[2].inApp)
         #expect(result.sessions[0].top.first?.name == "python3")
+        // Each session also reports its own process, without its children.
+        #expect(result.sessions.map(\.processGB) == [0.8, 1.0, 0.7])
     }
 
     @Test func eachProcessBelongsToItsNearestSession() {

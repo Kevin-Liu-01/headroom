@@ -120,12 +120,16 @@ struct MainView: View {
                 if st.advice == .ok {
                     statusLine(.checkCircle, Tok.green, Advice.ok.guidance)
                 } else {
-                    ForEach(Array(st.reasons.enumerated()), id: \.offset) { _, r in
+                    ForEach(Array(st.reasons.filter { $0.level != .ok }.enumerated()), id: \.offset) { _, r in
                         statusLine(.exclamationTriangle, r.level.color, r.message)
                     }
                     codeText(st.advice.guidance, font: Ty.small.font).foregroundStyle(Tok.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, MainView.slot + MainView.gap)
+                }
+                // Notes do not change the advice: a bloated session to restart, or pressure with memory free.
+                ForEach(Array(st.reasons.filter { $0.level == .ok }.enumerated()), id: \.offset) { _, r in
+                    statusLine(r.check == "session" ? .arrowPath : .exclamationTriangle, Tok.ink2, r.message)
                 }
             }
             .padding(.top, 14)

@@ -56,9 +56,10 @@ public final class Sampler: @unchecked Sendable {
                 entry.args = SystemProbe.args(pid)
                 entry.argsRead = true
             }
+            let use = SystemProbe.usage(pid)
             var proc = Proc(pid: pid, ppid: info.ppid, name: name, path: entry.path, startTime: info.startTime,
-                            footprint: SystemProbe.footprint(pid) ?? 0, cwd: nil, args: entry.args,
-                            stopped: info.stopped, uid: info.uid)
+                            footprint: use?.footprint ?? 0, cwd: nil, args: entry.args,
+                            stopped: info.stopped, uid: info.uid, cpuSeconds: use?.cpuSeconds)
             if mine, entry.session == nil { entry.session = Attribution.sessionApp(proc) != nil }
             if mine, entry.session == true {
                 // A session's directory rarely changes; read it at most once a minute.

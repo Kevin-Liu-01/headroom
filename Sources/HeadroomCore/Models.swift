@@ -13,9 +13,12 @@ public struct Proc: Codable, Equatable, Sendable {
     public var args: [String]?
     public var stopped: Bool
     public var uid: UInt32
+    /// CPU time used so far, user plus system, in seconds. Nil when unreadable.
+    public var cpuSeconds: Double?
 
     public init(pid: Int32, ppid: Int32, name: String, path: String, startTime: Double = 0,
-                footprint: UInt64, cwd: String? = nil, args: [String]? = nil, stopped: Bool = false, uid: UInt32 = 0) {
+                footprint: UInt64, cwd: String? = nil, args: [String]? = nil, stopped: Bool = false, uid: UInt32 = 0,
+                cpuSeconds: Double? = nil) {
         self.pid = pid
         self.ppid = ppid
         self.name = name
@@ -26,6 +29,7 @@ public struct Proc: Codable, Equatable, Sendable {
         self.args = args
         self.stopped = stopped
         self.uid = uid
+        self.cpuSeconds = cpuSeconds
     }
 
     public var gb: Double { Double(footprint) / 1_073_741_824 }
@@ -52,7 +56,7 @@ public enum Advice: String, Codable, Sendable, Comparable {
         case .hold:
             "Hold: agents start nothing new that is heavy. Wait with `headroom wait --gb N` or run the job later."
         case .critical:
-            "Critical: pause heavy jobs and restart Claude or Codex, whichever holds more memory. All agent state is on disk, so a restart of the app loses no work."
+            "Critical: pause heavy jobs and stop idle servers and browsers. If memory stays critical, restart the largest stuck session, or Claude or Codex, whichever holds more. All agent state is on disk, so a restart loses no conversation."
         }
     }
 
@@ -185,6 +189,15 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
     public var cwd: String?
     public var label: String
     public var totalGB: Double
+    /// The session's own Claude Code or Codex process, without its children. It grows with the conversation and
+    /// only a restart of the session frees it. Nil for a Codex app thread, which has no process of its own.
+    public var processGB: Double?
+    /// CPU seconds the session's own process has used, for the busy measure. Nil for a Codex app thread.
+    public var processCPUSeconds: Double?
+    /// The session process's average CPU over the last 10 minutes, in percent of one core. A conversation that
+    /// waits on the model or on tools uses a few percent; one that holds a core for 10 minutes cannot answer.
+    /// Nil until Headroom has watched the session for 10 minutes.
+    public var busyPercent: Double?
     public var processCount: Int
     /// True when the session runs inside its desktop app, false when it was started from a terminal.
     public var inApp: Bool
@@ -195,13 +208,17 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
 
     public var id: Int32 { pid }
 
-    public init(pid: Int32, app: AgentApp = .claude, cwd: String?, label: String, totalGB: Double, processCount: Int,
-                inApp: Bool, startTime: Double = 0, trendGB: Double? = nil, top: [ProcSummary]) {
+    public init(pid: Int32, app: AgentApp = .claude, cwd: String?, label: String, totalGB: Double, processGB: Double? = nil,
+                processCPUSeconds: Double? = nil, busyPercent: Double? = nil,
+                processCount: Int, inApp: Bool, startTime: Double = 0, trendGB: Double? = nil, top: [ProcSummary]) {
         self.pid = pid
         self.app = app
         self.cwd = cwd
         self.label = label
         self.totalGB = totalGB
+        self.processGB = processGB
+        self.processCPUSeconds = processCPUSeconds
+        self.busyPercent = busyPercent
         self.processCount = processCount
         self.inApp = inApp
         self.startTime = startTime

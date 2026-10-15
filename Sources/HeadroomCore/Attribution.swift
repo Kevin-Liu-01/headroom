@@ -349,10 +349,13 @@ public struct Attribution {
             guard let app = ownerApp(o) else { continue }
             for p in list { appByPid[p.pid] = app }
             let id: Int32, cwd: String?, inApp: Bool, start: Double
+            var own: Double?, ownCPU: Double?
             switch o {
             case .session(let s):
                 guard let sp = byPid[s] else { continue }
                 (id, cwd, inApp, start) = (s, sp.cwd, appPids[app]?.contains(s) == true, sp.startTime)
+                own = Format.round2(sp.gb)
+                ownCPU = sp.cpuSeconds
             case .thread(let h, let c):
                 (id, cwd, inApp, start) = (Attribution.threadID(host: h, cwd: c), c, hostInApp(h), byPid[h]?.startTime ?? 0)
             case .host:
@@ -368,7 +371,7 @@ public struct Attribution {
             }
             sessions.append(AgentSession(
                 pid: id, app: app, cwd: cwd, label: label,
-                totalGB: Format.round2(list.reduce(0) { $0 + $1.gb }),
+                totalGB: Format.round2(list.reduce(0) { $0 + $1.gb }), processGB: own, processCPUSeconds: ownCPU,
                 processCount: list.count, inApp: inApp, startTime: start, top: Array(top)))
         }
         sessions.sort { $0.totalGB != $1.totalGB ? $0.totalGB > $1.totalGB : $0.pid < $1.pid }

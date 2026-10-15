@@ -42,9 +42,67 @@ struct PolicyTests {
         #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, freePercent: free), t).advice == expected)
     }
 
-    @Test func pressureRaisesAdvice() {
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, pressure: .warning), t).advice == .hold)
+    @Test func pressureWarningHoldsOnlyWhenFreeMemoryIsLow() {
+        // With free memory above the hold line the warning is a note: the compressor holding idle memory.
+        let roomy = Policy.evaluate(Fixture.snapshot(claudeGB: 1, pressure: .warning), t)
+        #expect(roomy.advice == .ok)
+        #expect(roomy.reasons.contains { $0.check == "pressure" && $0.level == .ok })
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, freePercent: 25, pressure: .warning), t).advice == .hold)
         #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, pressure: .critical), t).advice == .critical)
+    }
+
+    // MARK: Sessions
+
+    static func session(_ pid: Int32, _ label: String, total: Double, own: Double, busy: Double? = nil) -> AgentSession {
+        AgentSession(pid: pid, cwd: "/Users/k/\(label)", label: label, totalGB: total, processGB: own, busyPercent: busy,
+                     processCount: 3, inApp: true, top: [])
+    }
+
+    @Test func bloatedSessionsDoNotHoldEveryAgent() {
+        // 2026-10-14: Claude at 106 GB, 74 GB of it in two stuck sessions' own processes, 52 percent free.
+        let sessions = [Self.session(5398, "gt-cloud", total: 61, own: 52, busy: 199), Self.session(1746, "cot", total: 23, own: 22, busy: 62)]
+        let snap = Fixture.snapshot(claudeGB: 106, freePercent: 52, pressure: .warning, sessions: sessions)
+        let e = Policy.evaluate(snap, t)
+        #expect(e.advice == .ok)
+        let notes = e.reasons.filter { $0.check == "session" }
+        #expect(notes.count == 2)
+        #expect(notes[0].message.contains("gt-cloud") && notes[0].message.contains("52.0 GB") && notes[0].message.contains("cannot answer"))
+        #expect(notes.allSatisfy { $0.level == .ok && $0.message.contains("conversation is saved") })
+        #expect(Policy.canStart(gb: 4, label: nil, status: Policy.status(snap, t, source: "test")).ok)
+    }
+
+    @Test func jobsStillCountTowardTheLines() {
+        // Work outside the session processes still holds: a 48 GB dev server and model run under a small session.
+        let snap = Fixture.snapshot(claudeGB: 50, sessions: [Self.session(1, "web", total: 50, own: 2)])
+        let e = Policy.evaluate(snap, t)
+        #expect(e.advice == .hold)
+        #expect(e.reasons[0].message.contains("48.0 GB of it outside the sessions' own processes"))
+        #expect(!Policy.canStart(gb: 1, label: nil, status: Policy.status(snap, t, source: "test")).ok)
+    }
+
+    @Test func canStartCountsWorkNotSessionHeaps() {
+        let snap = Fixture.snapshot(claudeGB: 60, freePercent: 70, sessions: [Self.session(1, "a", total: 60, own: 30)])
+        // Work is 30 GB: a 35 GB job reaches the 70 GB agents line only when the 30 GB heap is not counted twice.
+        #expect(Policy.canStart(gb: 35, label: nil, status: Policy.status(snap, t, source: "test")).ok)
+        #expect(!Policy.canStart(gb: 41, label: nil, status: Policy.status(snap, t, source: "test")).ok)
+    }
+
+    @Test func busySmallSessionGetsANoteAndQuietOnesDoNot() {
+        let busy = Policy.evaluate(Fixture.snapshot(claudeGB: 5, sessions: [Self.session(7, "x", total: 3, own: 2, busy: 95)]), t)
+        #expect(busy.advice == .ok)
+        #expect(busy.reasons.first?.message.contains("95 percent of a CPU core busy for 10 minutes") == true)
+        let quiet = Policy.evaluate(Fixture.snapshot(claudeGB: 5, sessions: [Self.session(7, "x", total: 3, own: 2, busy: 4)]), t)
+        #expect(quiet.reasons.isEmpty)
+    }
+
+    @Test func aSessionProcessAlertSaysItIsTheSession() {
+        var engine = AlertEngine()
+        let big = [ProcSummary(pid: 5398, name: "claude", gb: 49, session: "gt-cloud", startTime: 5)]
+        let snap = Fixture.snapshot(claudeGB: 60, largest: big, sessions: [Self.session(5398, "gt-cloud", total: 60, own: 49)])
+        let doc = Policy.status(snap, t, source: "test")
+        let alerts = engine.step(doc, evaluation: Policy.evaluate(snap, t), now: Date())
+        let p = alerts.first { $0.kind == .process }
+        #expect(p?.body.contains("session gt-cloud's own Claude process") == true)
     }
 
     @Test func worstCheckWinsAndEveryReasonIsListed() {
@@ -96,9 +154,10 @@ struct PolicyTests {
 
     @Test func guidanceSaysWhatToDo() {
         #expect(Advice.hold.guidance.contains("start nothing new that is heavy"))
-        #expect(Advice.critical.guidance.contains("pause heavy jobs and restart Claude"))
+        #expect(Advice.critical.guidance.contains("pause heavy jobs"))
+        #expect(Advice.critical.guidance.contains("stuck session"))
         #expect(Advice.critical.guidance.contains("Codex"))
-        #expect(Advice.critical.guidance.contains("loses no work"))
+        #expect(Advice.critical.guidance.contains("loses no conversation"))
     }
 
     // MARK: can-start

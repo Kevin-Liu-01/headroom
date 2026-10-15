@@ -120,6 +120,25 @@ public enum SystemProbe {
         return info.ri_phys_footprint
     }
 
+    /// The physical footprint in bytes and the CPU time in seconds from one proc_pid_rusage call.
+    public static func usage(_ pid: Int32) -> (footprint: UInt64, cpuSeconds: Double)? {
+        var info = rusage_info_v4()
+        let r = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(pid, RUSAGE_INFO_V4, $0)
+            }
+        }
+        guard r == 0 else { return nil }
+        let ticks = Double(info.ri_user_time + info.ri_system_time)
+        return (info.ri_phys_footprint, ticks * nanosecondsPerTick / 1_000_000_000)
+    }
+
+    static let nanosecondsPerTick: Double = {
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        return Double(tb.numer) / Double(tb.denom)
+    }()
+
     /// CPU time (user plus system) in seconds from proc_pid_rusage.
     public static func cpuSeconds(_ pid: Int32) -> Double? {
         var info = rusage_info_v4()

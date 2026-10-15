@@ -100,18 +100,20 @@ extension History {
     }
 }
 
-/// Each session's memory over the last 10 minutes, in memory only. Gives the change beside each session.
+/// Each session's memory and CPU over the last 10 minutes, in memory only. Gives the change beside each session
+/// and how busy its own process has been.
 public struct SessionTrends: Sendable {
     public static let window: TimeInterval = 10 * 60
 
-    private var series: [String: [(t: Double, gb: Double)]] = [:]
+    private var series: [String: [(t: Double, gb: Double, cpu: Double?)]] = [:]
 
     public init() {}
 
     static func key(_ s: AgentSession) -> String { "\(s.pid):\(Int(s.startTime))" }
 
-    /// Records the sessions of a snapshot and sets each session's trendGB: the change since the newest sample
-    /// at or before 10 minutes ago. A session watched for less than 10 minutes has no trend yet.
+    /// Records the sessions of a snapshot and sets each session's trendGB, the change since the newest sample
+    /// at or before 10 minutes ago, and busyPercent, its own process's average CPU since then. A session watched
+    /// for less than 10 minutes has neither yet.
     public mutating func apply(to snap: inout Snapshot) {
         let now = snap.time.timeIntervalSince1970
         let cutoff = now - SessionTrends.window + 1
@@ -120,14 +122,20 @@ public struct SessionTrends: Sendable {
             let k = SessionTrends.key(snap.sessions[i])
             live.insert(k)
             var list = series[k] ?? []
-            list.append((now, snap.sessions[i].totalGB))
+            list.append((now, snap.sessions[i].totalGB, snap.sessions[i].processCPUSeconds))
             // Keep one sample at or before the cutoff as the anchor and drop the older ones.
             while list.count >= 2, list[1].t <= cutoff { list.removeFirst() }
             series[k] = list
             if let first = list.first, first.t <= cutoff {
                 snap.sessions[i].trendGB = Format.round2(snap.sessions[i].totalGB - first.gb)
+                if let then = first.cpu, let cpu = snap.sessions[i].processCPUSeconds, cpu >= then, now > first.t {
+                    snap.sessions[i].busyPercent = (100 * (cpu - then) / (now - first.t)).rounded()
+                } else {
+                    snap.sessions[i].busyPercent = nil
+                }
             } else {
                 snap.sessions[i].trendGB = nil
+                snap.sessions[i].busyPercent = nil
             }
         }
         series = series.filter { live.contains($0.key) }

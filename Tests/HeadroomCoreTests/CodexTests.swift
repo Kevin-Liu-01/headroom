@@ -297,7 +297,7 @@ struct CodexPolicyTests {
         let doc = Policy.status(snap(claude: 20, codex: 15, free: 90), .defaults, source: "test")
         let r = Policy.canStart(gb: 40, label: nil, status: doc)
         #expect(!r.ok)
-        #expect(r.reason.contains("would bring the agents to 75.0 GB"))
+        #expect(r.reason.contains("would bring the agents' work to 75.0 GB"))
     }
 
     @Test func messagesNameBothApps() {
@@ -416,5 +416,27 @@ struct HistoryTests {
         s = snap(900, 4.5)
         trends.apply(to: &s)
         #expect(s.sessions[0].trendGB == 1.5, "the anchor is the sample from 300 s, 10 minutes before")
+    }
+
+    @Test func sessionBusyIsItsProcessCPUOverTenMinutes() {
+        var trends = SessionTrends()
+        func snap(_ seconds: Double, cpu: Double?) -> Snapshot {
+            var s = Fixture.snapshot(claudeGB: 1)
+            s.time = Date(timeIntervalSince1970: 1_800_000_000 + seconds)
+            s.sessions = [AgentSession(pid: 7, cwd: "/x/api", label: "api", totalGB: 1, processGB: 0.5, processCPUSeconds: cpu,
+                                       processCount: 2, inApp: true, startTime: 5, top: [])]
+            return s
+        }
+        var s = snap(0, cpu: 100)
+        trends.apply(to: &s)
+        #expect(s.sessions[0].busyPercent == nil)
+        // A stuck session: 1.5 cores for 10 minutes.
+        s = snap(600, cpu: 100 + 900)
+        trends.apply(to: &s)
+        #expect(s.sessions[0].busyPercent == 150)
+        // An unreadable CPU time gives no busy measure rather than a wrong one.
+        s = snap(620, cpu: nil)
+        trends.apply(to: &s)
+        #expect(s.sessions[0].busyPercent == nil)
     }
 }

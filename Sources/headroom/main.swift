@@ -115,7 +115,7 @@ func printStatus(_ d: StatusDocument) {
     out("Swap        \(Format.gb(s.system.swapUsedGB)) used, compressed \(Format.gb(s.system.compressedGB)), pressure \(s.system.pressure.rawValue)")
     if !d.reasons.isEmpty {
         out("")
-        for r in d.reasons { out("  [\(r.level.rawValue)] \(r.message)") }
+        for r in d.reasons { out("  [\(r.level == .ok ? "note" : r.level.rawValue)] \(r.message)") }
     }
     for app in AgentApp.allCases {
         let list = s.sessions(of: app)
