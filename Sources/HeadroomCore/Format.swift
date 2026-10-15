@@ -43,6 +43,15 @@ public enum Format {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.string(from: date)
     }
+
+    /// Parses an ISO 8601 time with or without fractional seconds, as Claude Code writes them.
+    public static func parseISO(_ text: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: text) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: text)
+    }
 }
 
 public enum JSON {

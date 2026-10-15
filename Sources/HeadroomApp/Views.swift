@@ -383,6 +383,25 @@ struct MainView: View {
         .frame(width: MainView.figure, alignment: .trailing)
     }
 
+    /// The session watch for one session: its conversation, queue and subagents, and the rescue button.
+    func watchRow(_ w: WatchedSession) -> some View {
+        let chat = w.transcriptMB.map { "\(Int($0)) MB conversation, \(w.images ?? 0) images" } ?? "conversation not found"
+        let reply = w.lastReply.map { "last reply \(relative($0, now: model.fixedNow ?? Date()))" } ?? "no reply yet"
+        return HStack(alignment: .firstTextBaseline, spacing: MainView.gap) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(chat), \(reply)").ty(.small).foregroundStyle(Tok.ink2)
+                Text("\(w.unread.count) unread, \(w.subagentsActive) subagents active, \(w.subagentsWaiting.count) waiting on a tool, \(w.polls.count) polling shells")
+                    .ty(.small).foregroundStyle(Tok.titanium)
+            }
+            Spacer(minLength: MainView.gap)
+            if w.sessionId != nil {
+                TextButton(title: "Rescue", glyph: .arrowPath) { actions.rescue(w) }
+                    .help("Save this session's work, then stop its process to free its memory")
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
     func sessionRow(_ x: AgentSession) -> some View {
         let open = model.expanded.contains(x.pid)
         return VStack(alignment: .leading, spacing: 0) {
@@ -397,6 +416,11 @@ struct MainView: View {
                         Text(x.label).ty(.label).foregroundStyle(Tok.ink).lineLimit(1).truncationMode(.middle)
                         Text(Format.shortPath(x.cwd) + (x.inApp ? "" : ", from a terminal") + ", \(x.processCount) proc")
                             .ty(.small).foregroundStyle(Tok.titanium).lineLimit(1).truncationMode(.middle)
+                        if let w = model.watch[x.pid], !w.flags.isEmpty {
+                            Text(w.notes.joined(separator: ", "))
+                                .ty(.small).foregroundStyle(w.flags.contains(.failing) ? Tok.red : Tok.amber)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     Spacer(minLength: MainView.gap)
                     trendCell(x.trendGB)
@@ -410,6 +434,7 @@ struct MainView: View {
             .accessibilityLabel("\(x.app.name) session \(x.label), \(Format.gb(x.totalGB))")
             if open {
                 VStack(alignment: .leading, spacing: 0) {
+                    if let w = model.watch[x.pid] { watchRow(w) }
                     ForEach(x.top) { p in procRow(p) }
                 }
                 .padding(.leading, MainView.inset)

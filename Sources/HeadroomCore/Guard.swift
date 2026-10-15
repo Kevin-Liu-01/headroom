@@ -36,6 +36,11 @@ public struct GuardRules: Codable, Equatable, Sendable {
     public var cooldownSeconds: Double
     /// Seconds between SIGTERM and SIGKILL.
     public var graceSeconds: Double
+    /// Rescue: a Claude Code session in the desktop app that has stopped working (stuck or not answering) while
+    /// bloated or busy, for `rescueConfirmScans` minute-apart scans in a row, has its work written down and its
+    /// process stopped; the app resumes the conversation, and the session gets a recovery note. False only reports.
+    public var rescueSessions: Bool
+    public var rescueConfirmScans: Double
     /// Text that marks a process as gentle when its command line or working directory contains it, such as a
     /// deploy gate's folder. A gentle process is never stopped as part of a job or by the low-memory rule; only on
     /// its own, by the growth, ceiling or leak rule. (macOS does not show other processes' environments, so the
@@ -46,13 +51,14 @@ public struct GuardRules: Codable, Equatable, Sendable {
         armed: false, intervalSeconds: 1, windowSeconds: 5, growthGBPerSecond: 1, growthFloorGB: 16,
         ceilingGB: 64, ceilingGrowthGBPerSecond: 0.1, leakFloorGB: 32, leakGainGB: 8, leakWindowSeconds: 120,
         lowFreePercent: 10, lowFreeMinGB: 2,
-        lowFreeMinGrowthGBPerSecond: 0.05, cooldownSeconds: 2, graceSeconds: 1, gentlePatterns: [])
+        lowFreeMinGrowthGBPerSecond: 0.05, cooldownSeconds: 2, graceSeconds: 1, gentlePatterns: [],
+        rescueSessions: true, rescueConfirmScans: 3)
 
     public init(armed: Bool, intervalSeconds: Double, windowSeconds: Double, growthGBPerSecond: Double,
                 growthFloorGB: Double, ceilingGB: Double, ceilingGrowthGBPerSecond: Double, leakFloorGB: Double,
                 leakGainGB: Double, leakWindowSeconds: Double, lowFreePercent: Double,
                 lowFreeMinGB: Double, lowFreeMinGrowthGBPerSecond: Double, cooldownSeconds: Double, graceSeconds: Double,
-                gentlePatterns: [String] = []) {
+                gentlePatterns: [String] = [], rescueSessions: Bool = true, rescueConfirmScans: Double = 3) {
         self.armed = armed
         self.intervalSeconds = intervalSeconds
         self.windowSeconds = windowSeconds
@@ -69,6 +75,8 @@ public struct GuardRules: Codable, Equatable, Sendable {
         self.cooldownSeconds = cooldownSeconds
         self.graceSeconds = graceSeconds
         self.gentlePatterns = gentlePatterns
+        self.rescueSessions = rescueSessions
+        self.rescueConfirmScans = rescueConfirmScans
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +98,8 @@ public struct GuardRules: Codable, Equatable, Sendable {
         cooldownSeconds = try c.decodeIfPresent(Double.self, forKey: .cooldownSeconds) ?? d.cooldownSeconds
         graceSeconds = try c.decodeIfPresent(Double.self, forKey: .graceSeconds) ?? d.graceSeconds
         gentlePatterns = try c.decodeIfPresent([String].self, forKey: .gentlePatterns) ?? d.gentlePatterns
+        rescueSessions = try c.decodeIfPresent(Bool.self, forKey: .rescueSessions) ?? d.rescueSessions
+        rescueConfirmScans = try c.decodeIfPresent(Double.self, forKey: .rescueConfirmScans) ?? d.rescueConfirmScans
     }
 
     /// Clamps every value into a range where the guard still behaves sensibly.
@@ -114,6 +124,7 @@ public struct GuardRules: Codable, Equatable, Sendable {
         r.cooldownSeconds = clamp(cooldownSeconds, 0, 600, d.cooldownSeconds)
         r.graceSeconds = clamp(graceSeconds, 0, 30, d.graceSeconds)
         r.gentlePatterns = gentlePatterns.filter { !$0.isEmpty }
+        r.rescueConfirmScans = clamp(rescueConfirmScans, 1, 60, d.rescueConfirmScans)
         return r
     }
 }

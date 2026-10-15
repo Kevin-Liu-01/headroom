@@ -261,6 +261,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     func publish(_ doc: StatusDocument, _ e: Policy.Evaluation) {
         sampling = false
         model.status = doc
+        if let w = SessionWatcher.read(paths: paths), Date().timeIntervalSince(w.updatedAt) < 300 {
+            model.watch = Dictionary(w.sessions.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+        } else {
+            model.watch = [:]
+        }
         model.pending = hub.pending
         model.notes = hub.notes
         let liveSessions = Set(doc.snapshot.sessions.map(\.pid))
@@ -509,6 +514,29 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
         pausedByHeadroom.removeAll()
         resampleSoon()
+    }
+
+    /// Saves a session's work, then stops its process; the desktop app resumes it with a recovery note.
+    func rescue(_ s: WatchedSession) {
+        let waiting = s.subagentsWaiting.count, unread = s.unread.count
+        let text = """
+        Headroom writes down what \(s.label) was doing, then stops its process to free \(Format.gb(s.processGB)):
+
+        - \(waiting) subagent\(waiting == 1 ? "" : "s") waiting on a tool, with their last steps
+        - \(unread) undelivered message\(unread == 1 ? "" : "s"), word for word
+        - the polling shells and processes that stop with it
+
+        The conversation and every subagent transcript stay on disk. \(s.inApp ? "The Claude app resumes the session on your next message" : "Resume it with claude --resume in its folder"), and it receives a recovery note telling it to pick everything up again. A turn in progress is interrupted.
+        """
+        guard confirm("Rescue \(s.label)?", text, buttons: ["Rescue", "Cancel"]) == 0 else { return }
+        let procs = Sampler().readProcesses()
+        do {
+            let r = try SessionRescue.rescue(s, procs: procs, paths: paths, reason: s.notes.isEmpty ? "the person asked for it" : s.notes.joined(separator: ", "), stop: true)
+            info(r.stopped ? "Rescued \(s.label)" : "Saved \(s.label)'s work",
+                 (r.stopped ? "Freed about \(Format.gb(r.freedGB)). " : "The process did not exit, so nothing was freed. ") + "The recovery note is at \(r.markdown.path).")
+        } catch {
+            info("Could not rescue \(s.label)", "\(error)")
+        }
     }
 
     func restart(_ app: AgentApp) {

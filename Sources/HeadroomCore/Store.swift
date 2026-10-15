@@ -86,6 +86,30 @@ public enum Store {
     private static let eventLock = NSLock()
     public static let maxEventBytes: UInt64 = 10 * 1024 * 1024
 
+    /// Appends lines to a JSONL file that keeps only its last `keepSeconds`: past 20 MB the file is rewritten
+    /// without rows whose "time" is older.
+    public static func appendRaw(_ rows: Data, to url: URL, keepSeconds: Double, now: Date = Date()) {
+        guard !rows.isEmpty else { return }
+        eventLock.lock()
+        defer { eventLock.unlock() }
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value,
+           size > 20 << 20, let old = try? Data(contentsOf: url) {
+            let cutoff = now.addingTimeInterval(-keepSeconds)
+            var kept = Data()
+            for line in old.split(separator: 0x0A) {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let t = (obj["time"] as? String).flatMap(Format.parseISO), t >= cutoff else { continue }
+                kept.append(Data(line))
+                kept.append(0x0A)
+            }
+            try? kept.write(to: url, options: .atomic)
+        }
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        _ = rows.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    }
+
     /// Appends one JSON line to events.jsonl. Rotates to events.1.jsonl past 10 MB.
     public static func appendEvent(_ type: String, _ fields: [String: Any], paths: Paths, now: Date = Date()) {
         var obj = (clean(fields) as? [String: Any]) ?? [:]

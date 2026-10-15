@@ -190,7 +190,7 @@ public struct APIRouter: Sendable {
         guard hostAllowed(req) else { return .error(403, "host not allowed") }
         let parts = req.path.split(separator: "/").map(String.init)
         let route = parts.count == 3 && parts[0] == "v1" && parts[1] == "requests" ? "/v1/requests/:id" : "/" + parts.joined(separator: "/")
-        let known: Set<String> = ["/v1/status", "/v1/can-start", "/v1/notes", "/v1/requests", "/v1/requests/:id"]
+        let known: Set<String> = ["/v1/status", "/v1/can-start", "/v1/notes", "/v1/requests", "/v1/requests/:id", "/v1/sessions"]
         switch (req.method, route) {
         case ("GET", "/v1/status"):
             guard let s = hub.status else { return .error(503, "no sample yet") }
@@ -224,6 +224,10 @@ public struct APIRouter: Sendable {
             } catch {
                 return .error(400, "invalid request")
             }
+        case ("GET", "/v1/sessions"):
+            // The guard writes the session watch every minute.
+            guard let d = SessionWatcher.read(paths: hub.paths) else { return .error(503, "no session scan yet; the guard writes one every minute") }
+            return .json(d)
         case ("GET", "/v1/requests/:id"):
             let id = parts[2]
             guard let r = hub.request(id: id) else { return .error(404, "no request \(id)") }

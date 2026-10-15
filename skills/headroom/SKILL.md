@@ -29,10 +29,30 @@ Heavy work is any of the following:
 | Advice | When | What you do |
 | --- | --- | --- |
 | ok | No line is crossed. | Work normally. |
-| hold | Claude or Codex reaches its hold line, 47 percent of the Mac's memory (60 GB on a 128 GB Mac), free memory is below 30 percent, or macOS reports memory pressure. | Start nothing new that is heavy. Finish or wait. |
-| critical | Claude or Codex reaches its critical line, 70 percent of the Mac's memory (90 GB on a 128 GB Mac), free memory is below 15 percent, or macOS reports critical pressure. | Start nothing heavy, stop your own heavy jobs, and tell the person. They may restart the Claude app, and all agent state is on disk. |
+| hold | The work Claude or Codex agents started reaches its hold line, 47 percent of the Mac's memory (60 GB on a 128 GB Mac), free memory is below 30 percent, or macOS reports memory pressure while free memory is below 30 percent. | Start nothing new that is heavy. Finish or wait. |
+| critical | The work Claude or Codex agents started reaches its critical line, 70 percent of the Mac's memory (90 GB on a 128 GB Mac), free memory is below 15 percent, or macOS reports critical pressure. | Start nothing heavy, stop your own heavy jobs, and tell the person. They may restart the Claude app, and all agent state is on disk. |
 
 `headroom status` prints the advice, the Claude and Codex totals, free memory, every agent session with its working directory, and the heavy jobs. Codex runs in the ChatGPT app (bundle id com.openai.codex) and as `codex` CLI sessions. Headroom counts both, and each app's total includes its terminal sessions. `headroom status --json` gives the same data to a script.
+
+The lines count the work agents start (builds, servers, browsers, model runs), not the sessions' own Claude Code and Codex processes. A bloated or stuck session gets a note in `headroom status` instead; it does not hold your work.
+
+## Your own session's health
+
+A session's own process grows with its conversation, and only a restart frees it. On 2026-10-14 a coordinator session with fifteen subagents grew to 29 GB, with 3,700 images in a 1.8 GB conversation, and froze for hours. It answered nobody, and none of its subagents could move.
+
+- Find your own session process by walking up from your shell: `ps -o pid=,ppid=,command= -p $$`, then each parent until the `claude` process. Never pick it by folder, because several sessions often share one folder.
+- `headroom session <your pid>` shows your conversation's size and images, your unread messages, your subagents waiting on a tool, your polling shells and your health.
+- When Headroom's hook warns you about your session:
+  - Keep new images and long outputs out of the conversation. Resize screenshots before reading them, read files in ranges, and let a subagent look at bulky material and report back in a few lines.
+  - Wait with one background monitor rather than many `until …; do sleep …; done` loops, and stop loops whose result you no longer need.
+  - Run fewer subagents at once. If the session keeps growing, write a handoff and continue in a fresh session.
+- When you receive a Headroom recovery message, your process was restarted to save your work and free its memory.
+  1. Read the recovery note it names.
+  2. Resume each subagent that was waiting on a tool by messaging its id, and tell it to run its last step again.
+  3. Act on the undelivered messages.
+  4. Answer the person's messages and say the session was restarted.
+- Never run `headroom rescue` on another session yourself. Rescue is for the person or for the guard, which rescues a desktop session by itself once it has been failing for three minutes.
+- Chain checks with `&&`, never `;`: `headroom can-start --gb 4 && <job>`. With `;` the job starts even when the answer is no.
 
 ## The runaway guard
 
@@ -74,6 +94,8 @@ It never stops the Claude or Codex apps, agent sessions, apps the person opened,
 | `headroom can-start --gb N [--label X]` | Exit 0 when a job of N GB may start now, 1 when not |
 | `headroom wait --gb N [--timeout M]` | Wait until it may start. Exit 75 after M minutes. |
 | `headroom note TEXT [--gb N] [--label X]` | Announce a heavy job to the person |
+| `headroom sessions [--json]` | Every Claude Code session's own memory, CPU, conversation, unread messages, subagents, polls and health |
+| `headroom session <pid, id or title>` | One session in full |
 | `headroom request --action A --pid P --reason TEXT [--wait]` | Ask the person to approve an action |
 | `headroom history [--json]` | The agents' memory over the last 60 minutes |
 | `headroom events [--follow]` | The event log: samples, alerts, requests |

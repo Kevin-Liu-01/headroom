@@ -7,6 +7,8 @@ final class AppModel: ObservableObject {
     @Published var status: StatusDocument?
     @Published var pending: [AgentRequest] = []
     @Published var notes: [AgentNote] = []
+    /// The guard's session watch by pid: conversation, unread messages, waiting subagents, polls and health.
+    @Published var watch: [Int32: WatchedSession] = [:]
     @Published var expanded: Set<Int32> = []
     /// The window shows the first rows of each list until the person asks for all of them,
     /// so the heavy jobs stay in view when many sessions run.
@@ -34,6 +36,7 @@ protocol WindowActions: AnyObject {
     func pauseHeavyJobs()
     func resumePaused()
     func restart(_ app: AgentApp)
+    func rescue(_ s: WatchedSession)
     func approve(_ r: AgentRequest)
     func deny(_ r: AgentRequest)
     func openLog()
@@ -50,6 +53,7 @@ final class NoActions: WindowActions {
     func pauseHeavyJobs() {}
     func resumePaused() {}
     func restart(_ app: AgentApp) {}
+    func rescue(_ s: WatchedSession) {}
     func approve(_ r: AgentRequest) {}
     func deny(_ r: AgentRequest) {}
     func openLog() {}

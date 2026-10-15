@@ -59,11 +59,13 @@ macOS does not let an unprivileged app read the footprint of processes owned by 
 
 Headroom watches three totals: all agents together, the Claude agents and the Codex agents. On a new install each has a hold line at 47 percent of the Mac's memory and a critical line at 70 percent, rounded to 5 GB, so a 128 GB Mac holds at 60 GB and turns critical at 90 GB, and a 32 GB Mac at 15 and 20 GB. Free memory and the system's memory pressure have their own lines. The advice is the worst of them.
 
+The lines measure the agents' work: everything in an app's total except the sessions' own Claude Code and Codex processes. A session's own process grows with its conversation and only a restart frees it, so counting it held every agent's work for as long as one session stayed bloated. A bloated or stuck session gets a note instead, which names it and does not raise the advice (see [Sessions and rescue](#sessions-and-rescue)). Free memory and pressure still count everything.
+
 | Advice | When | What it means |
 | --- | --- | --- |
 | ok | No line is crossed. | Agents may start heavy jobs. |
-| hold | The agents, Claude or Codex reach their hold line, free memory is below 30 percent, or the system reports memory pressure. | Agents start nothing new that is heavy. |
-| critical | The agents, Claude or Codex reach their critical line, free memory is below 15 percent, or the system reports critical pressure. | Pause heavy jobs and restart Claude or Codex, whichever holds more memory. All agent state is on disk, so a restart of the app loses no work. |
+| hold | The agents', Claude's or Codex's work reaches its hold line, free memory is below 30 percent, or the system reports memory pressure while free memory is below 30 percent. | Agents start nothing new that is heavy. |
+| critical | The agents', Claude's or Codex's work reaches its critical line, free memory is below 15 percent, or the system reports critical pressure. | Pause heavy jobs and stop idle servers and browsers. If memory stays critical, restart the largest stuck session, or Claude or Codex. All agent state is on disk, so a restart loses no conversation. |
 
 The settings window changes every line, and its second column changes the runaway guard: its mode, every limit and the gentle patterns. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI, the hooks and the MCP server use the same lines as the app; the guard's limits are stored in `guard.json` beside it.
 
@@ -143,6 +145,45 @@ The rules live in `guard.json` beside the other files, and a missing key keeps i
 
 The Settings window and `headroom guard set` both write this file, and the guard rereads it every 10 seconds. A pass over about 650 processes and jobs takes 15 to 20 ms, so the guard uses about 1 percent of one core and 14 MB. It runs apart from the app, so it keeps working when the window is closed or the app hangs.
 
+## Sessions and rescue
+
+On October 14, 2026 two long-running Claude Code sessions stopped answering while they held 74 GB between them in their own processes. One was frozen: its main thread ran JavaScript for hours without returning to its event loop, so neither its conversation nor its fifteen subagents could move. [The incident report](docs/incidents/2026-10-14-stuck-sessions.md) has the whole account. Headroom now watches for this, and fixes it without losing work.
+
+**Session watch.** Every minute the guard records, for each Claude Code session:
+
+- its own process's memory and its 10-minute change, and the CPU it used over 10 minutes;
+- its conversation file's size and image count (read once, then only what was appended), its last reply and whether a reply is owed;
+- its unread queue: messages enqueued after its last reply that it never took, from the person, other agents, other sessions and tasks;
+- its subagents and workflow agents: how many in all, how many wrote in the last 8 hours, and which are waiting on a tool call with no result;
+- its polling shells: long-lived `until` or `while` loops around `sleep`, the file each waits on, and whether that file stopped changing.
+
+The facts come from the process table and the files Claude Code writes under `~/.claude/projects`, never from the session, so a frozen session is still described. A session's id comes from the `--resume` argument the desktop app starts it with; when a session changes folder, the newest file with that id wins. The latest record is `sessions.json`, and `sessions-history.jsonl` keeps one row per session a minute for two days.
+
+| Health | When |
+| --- | --- |
+| busy | Its own process kept half a CPU core busy for 10 minutes. A conversation waiting on the model or on tools uses a few percent. |
+| bloated | Its own process holds 16 GB. |
+| heavy | Its conversation file passed 500 MB or 1,000 images. |
+| polling | It runs 6 or more polling shells, or one waits on a file that has not changed for 2 hours. |
+| not-answering | A message from the person has waited 30 minutes. |
+| stuck | It has work pending (unread messages, an owed reply or a subagent waiting on a tool) and neither it nor any subagent has written for 20 minutes. |
+| failing | Stuck or not answering, and bloated or busy. |
+
+```sh
+headroom sessions               # every session: own memory, CPU, conversation, unread, subagents, polls, health
+headroom session "coordinator"  # one session in full, by pid, session id or part of its title
+headroom rescue 4242 --dry-run  # write the recovery ledger only
+headroom rescue 4242            # save the work, then stop the process
+```
+
+The window adds each session's health under its name, and opening a session shows its conversation, queue and subagents with a Rescue button. `GET /v1/sessions` returns `sessions.json`.
+
+**Rescue: save the work, clear the memory.** A rescue first writes a recovery ledger to `rescues/` as JSON and as a Markdown note: every subagent that was waiting on a tool with its last step, every other active subagent, every undelivered message word for word, and the polling shells and processes that stop with the session. Then it checks that the process still runs the same session, sends SIGTERM, and sends SIGKILL after 30 seconds if it is still there. The conversation, the subagent transcripts and every file stay on disk. The desktop app resumes the session on its next message, and the session receives a recovery message telling it to read the note, resume each waiting subagent by messaging its id, act on the undelivered messages and answer the person. The message arrives through the `SessionStart` or `UserPromptSubmit` hook; without the hooks, `headroom rescue` prints it to paste.
+
+When the guard is armed, it rescues a session by itself once the session has been failing for three scans a minute apart, at most once every 10 minutes, and only sessions in the desktop app, which resumes a stopped session from disk. A terminal session is reported, not stopped. `headroom guard set rescueSessions=false` turns this off, and `rescueConfirmScans` changes the wait. A turn in progress is interrupted, but a failing session has stopped making progress by definition.
+
+**Prevention.** The same hook tells a session about its own health before it fails, at most once every 30 minutes: when it is bloated or heavy, to keep new images and long outputs out of its conversation; when it polls, to use one monitor instead of many sleep loops; when it is busy, to run fewer subagents at once or hand off to a fresh session.
+
 ## How agents use it
 
 Headroom gives agents five ways to read the memory state. All five agree, because they read the same state and use the same policy.
@@ -168,6 +209,7 @@ headroom history                # the last 60 minutes, one row per minute
 headroom events --follow
 headroom doctor
 headroom guard status           # the runaway guard: mode, rules, fastest growers, recent stops
+headroom sessions               # every Claude Code session's health; see Sessions and rescue
 ```
 
 `can-start` answers yes when the advice is ok, the free memory after the job stays above the hold line, and the agents' total after the job stays below the critical line. `history --all` prints every sample and `history --json` prints the points as JSON. `wait` checks every 10 seconds and exits with code 75 when the timeout passes. `request --wait` exits 0 when the person approves and 1 when the person denies.

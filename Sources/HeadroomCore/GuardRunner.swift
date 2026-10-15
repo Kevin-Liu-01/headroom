@@ -51,6 +51,9 @@ public struct GuardState: Codable, Equatable, Sendable {
     public var stops: Int
     public var lastStop: String?
     public var fastest: [GuardGrower]
+    /// Rescues since the guard started, and the last one.
+    public var rescues: Int?
+    public var lastRescue: String?
 
     /// True when the state was written recently enough that the guard is running.
     public func isFresh(now: Date = Date()) -> Bool { now.timeIntervalSince(updatedAt) < 30 }
@@ -73,12 +76,23 @@ public final class GuardRunner {
     private var lastStopText: String?
     private var lastTickMs = 0.0
     private let startedAt = Date()
+    let sessions: SessionWatcher
+    /// The session scan reads files and can take seconds, so it runs here and never delays the once-a-second check.
+    private let sessionQueue = DispatchQueue(label: "headroom.guard.sessions", qos: .utility)
+    private let sessionLock = NSLock()
+    private var sessionScanRunning = false
+    private var sessionsScanned = -Double.infinity
+    private var failingScans: [String: Int] = [:]
+    private var rescuedAt = -Double.infinity
+    private var rescues = 0
+    private var lastRescueText: String?
     /// Shows a notification; tests replace it.
     var notifier: (String, String) -> Void = GuardRunner.notify
 
     public init(paths: Paths = Paths(), forceArmed: Bool? = nil) {
         self.paths = paths
         self.forceArmed = forceArmed
+        sessions = SessionWatcher(paths: paths)
         var r = GuardStore.loadRules(paths: paths)
         if let forceArmed { r.armed = forceArmed }
         engine = GuardEngine(rules: r)
@@ -116,6 +130,14 @@ public final class GuardRunner {
         let free = SystemProbe.freeLevel()
         if let d = engine.observe(time: now, procs: procs, freePercent: free, pending: Set(pending.keys)) {
             act(d, procs: procs, free: free, now: now)
+        }
+        if now - sessionsScanned >= 60, startSessionScan() {
+            sessionsScanned = now
+            let rules = engine.rules
+            sessionQueue.async { [self] in
+                considerRescue(sessions.scan(procs: procs), procs: procs, rules: rules, now: now)
+                sessionLock.withLock { sessionScanRunning = false }
+            }
         }
         ticks += 1
         if now - stateWritten >= 5 {
@@ -176,6 +198,53 @@ public final class GuardRunner {
         }
     }
 
+    /// Rescues at most one failing session every 10 minutes, once it has failed `rescueConfirmScans` scans in a row.
+    /// Only sessions in the desktop app, which resumes a stopped session on the next message.
+    /// True when no scan is running, and marks one as running.
+    func startSessionScan() -> Bool {
+        sessionLock.withLock {
+            guard !sessionScanRunning else { return false }
+            sessionScanRunning = true
+            return true
+        }
+    }
+
+    func considerRescue(_ doc: SessionsDocument, procs: [Proc], rules: GuardRules, now: Double) {
+        var next: [String: Int] = [:]
+        for s in doc.sessions where s.flags.contains(.failing) {
+            let key = "\(s.pid):\(Int(s.startTime))"
+            next[key] = (failingScans[key] ?? 0) + 1
+        }
+        failingScans = next
+        guard rules.rescueSessions, now - rescuedAt >= 600 else { return }
+        let due = doc.sessions.filter {
+            $0.inApp && $0.sessionId != nil && (failingScans["\($0.pid):\(Int($0.startTime))"] ?? 0) >= Int(rules.rescueConfirmScans)
+        }
+        guard let s = due.max(by: { $0.processGB < $1.processGB }) else { return }
+        rescuedAt = now
+        let reason = s.notes.joined(separator: ", ")
+        guard rules.armed else {
+            Store.appendEvent("rescue", ["action": "would-rescue", "pid": Int(s.pid), "session": s.sessionId ?? "",
+                                         "title": s.title ?? "", "gb": s.processGB, "reason": reason], paths: paths)
+            notifier("Headroom would rescue a stuck session", "\(s.label): \(reason). Arm the guard to let it save the work and free the memory.")
+            return
+        }
+        do {
+            let r = try SessionRescue.rescue(s, procs: procs, paths: paths, reason: reason, stop: true)
+            let text = "Rescued \(s.label) (pid \(s.pid), \(Format.gb(s.processGB))): \(reason). Ledger \(r.markdown.path)."
+            sessionLock.withLock {
+                rescues += 1
+                lastRescueText = text
+            }
+            notifier("Headroom rescued a stuck session",
+                     "\(s.label) had stopped working. Its work is saved and \(Format.gb(r.freedGB)) is free; it resumes with a recovery note on your next message.")
+        } catch {
+            let text = "Could not rescue \(s.label): \(error)"
+            sessionLock.withLock { lastRescueText = text }
+            Store.appendEvent("rescue", ["action": "failed", "pid": Int(s.pid), "error": "\(error)"], paths: paths)
+        }
+    }
+
     /// "Claude Code session in ~/repos/x (pid 123)", or what the process runs under when no agent owns it.
     public static func ownerText(_ pid: Int32, procs: [Proc]) -> String {
         let a = Attribution(procs: procs, bundleID: { _ in nil })
@@ -205,6 +274,7 @@ public final class GuardRunner {
     }
 
     func writeState(free: Int, now: Double) {
+        let (rescueCount, rescueText) = sessionLock.withLock { (rescues, lastRescueText) }
         let fastest = engine.fastest(limit: 5, now: now).map {
             GuardGrower(pid: $0.unit.root, kind: $0.unit.kind.rawValue, name: $0.unit.name,
                         gb: Format.round2($0.unit.gb), rateGBPerSecond: Format.round2($0.rate))
@@ -212,7 +282,7 @@ public final class GuardRunner {
         let state = GuardState(pid: getpid(), armed: engine.rules.armed, startedAt: startedAt, updatedAt: Date(),
                                ticks: ticks, watching: engine.watching, freePercent: free,
                                tickMilliseconds: Format.round2(lastTickMs), stops: stops, lastStop: lastStopText,
-                               fastest: fastest)
+                               fastest: fastest, rescues: rescueCount, lastRescue: rescueText)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601

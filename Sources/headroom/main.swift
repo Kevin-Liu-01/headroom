@@ -24,6 +24,12 @@ Usage:
   headroom mcp                             Run the stdio MCP server (tools: status, can_start, note, request).
   headroom install-hook --print            Print the hook and MCP configuration for Claude Code and Codex.
   headroom doctor                          Check the app, the files, the API and the hook setup.
+  headroom sessions [--json]               Every Claude Code session: own memory, CPU, conversation size and images,
+                                           unread messages, subagents waiting on a tool, polling shells, and health.
+  headroom session PID|ID|TITLE [--json]   One session in full: what waits in it and which subagents are stuck.
+  headroom rescue PID|ID|TITLE [--dry-run] Save a session's work (a recovery ledger and note), then stop its process
+                                           to free its memory. The desktop app resumes it, and the session receives
+                                           the note when it next starts. --dry-run only writes the ledger.
   headroom guard [status]                  The runaway guard: its mode, its rules and its recent stops.
   headroom guard arm | observe             Stop runaway processes, or only log what would be stopped.
   headroom guard set KEY=VALUE ...         Change the guard's limits, such as growthFloorGB=20 or
@@ -170,6 +176,83 @@ func printHistory(_ h: History, all: Bool) {
     }
 }
 
+// MARK: sessions
+
+/// The latest session record: the guard's when it is fresh, else a scan now (CPU and trends need the guard).
+func currentSessions() -> SessionsDocument {
+    if let d = SessionWatcher.read(paths: client.paths), Date().timeIntervalSince(d.updatedAt) < 150 { return d }
+    return SessionWatcher(paths: client.paths).scan(procs: Sampler().readProcesses())
+}
+
+func findSession(_ key: String, in doc: SessionsDocument) -> WatchedSession {
+    let k = key.lowercased()
+    let hits = doc.sessions.filter {
+        String($0.pid) == key || ($0.sessionId?.lowercased().hasPrefix(k) ?? false) || ($0.title?.lowercased().contains(k) ?? false)
+    }
+    if hits.count == 1 { return hits[0] }
+    if hits.isEmpty { fail("no session matches \(key); see headroom sessions") }
+    fail("\(hits.count) sessions match \(key): \(hits.map { "\($0.label) (pid \($0.pid))" }.joined(separator: ", ")); use a pid")
+}
+
+func minutesAgo(_ d: Date?) -> String {
+    guard let d else { return "-" }
+    let m = Int(Date().timeIntervalSince(d) / 60)
+    return m < 1 ? "now" : m < 120 ? "\(m) min" : "\(m / 60) h"
+}
+
+/// "just now", "12 min ago", "3 h ago", or "never".
+func whenAgo(_ d: Date?) -> String {
+    guard d != nil else { return "never" }
+    let m = minutesAgo(d)
+    return m == "now" ? "just now" : m + " ago"
+}
+
+func printSessions(_ doc: SessionsDocument) {
+    out(pad("Session", 30) + pad("pid", 7) + pad("own", 9) + pad("cpu", 6) + pad("chat", 13) + pad("reply", 8)
+        + pad("unread", 7) + pad("agents", 12) + pad("polls", 6) + "health")
+    for s in doc.sessions {
+        let chat = s.transcriptMB.map { "\(Int($0)) MB/\(s.images ?? 0)i" } ?? "-"
+        let agents = "\(s.subagentsActive) (\(s.subagentsWaiting.count) wait)"
+        let health = s.flags.isEmpty ? "ok" : s.flags.map(\.rawValue).joined(separator: ",")
+        out(pad(s.label, 30) + pad(String(s.pid), 7) + pad(Format.gb(s.processGB), 9) + pad(s.busyPercent.map { "\(Int($0))%" } ?? "-", 6)
+            + pad(chat, 13) + pad(minutesAgo(s.lastReply), 8) + pad(String(s.unread.count), 7) + pad(agents, 12)
+            + pad(String(s.polls.count), 6) + health + (s.inApp ? "" : "  terminal"))
+    }
+    let flagged = doc.sessions.filter { !$0.flags.isEmpty }
+    if !flagged.isEmpty { out("") }
+    for s in flagged { out("  " + SessionHealth.sentence(s)) }
+    out("")
+    out("Updated \(ago(doc.updatedAt)). own = the session's own process; chat = conversation size and images; reply = since its last reply.")
+}
+
+func printSession(_ s: WatchedSession) {
+    out("\(s.label)  (pid \(s.pid)\(s.inApp ? ", desktop app" : ", terminal"))")
+    out("Session     \(s.sessionId ?? "unknown")")
+    out("Folder      \(Format.shortPath(s.cwd ?? "?"))")
+    out("Memory      own process \(Format.gb(s.processGB)), with its processes \(Format.gb(s.totalGB))\(s.trendGB.map { ", \(Format.change($0, minus: "-")) in 10 min" } ?? "")")
+    out("CPU         \(s.busyPercent.map { "\(Int($0)) percent of a core over 10 min" } ?? "not measured yet (the guard measures it)")")
+    out("Chat        \(s.transcriptMB.map { "\(Int($0)) MB" } ?? "-"), \(s.images ?? 0) images, last reply \(whenAgo(s.lastReply))\(s.awaitingReply ? ", a reply is owed" : "")")
+    out("Subagents   \(s.subagentsTotal) in all, \(s.subagentsActive) active in 8 h, \(s.subagentsWaiting.count) waiting on a tool, newest write \(whenAgo(s.lastSubagentWrite))")
+    out("Health      \(SessionHealth.sentence(s))")
+    if !s.unread.isEmpty {
+        out("")
+        out("Unread (\(s.unread.count))")
+        for m in s.unread { out("  \(pad(whenAgo(m.time), 11)) \(m.kind.rawValue)  \(String(m.text.replacingOccurrences(of: "\n", with: " ").prefix(110)))") }
+    }
+    if !s.subagentsWaiting.isEmpty {
+        out("")
+        out("Subagents waiting on a tool (\(s.subagentsWaiting.count))")
+        for a in s.subagentsWaiting {
+            out("  \(a.id.prefix(12))  \(pad(whenAgo(a.lastWrite), 11)) \(pad(a.task.isEmpty ? "-" : a.task, 34))  \(a.waiting.map { "\($0.name): \(String($0.what.prefix(60)))" } ?? "")")
+        }
+    }
+    if !s.polls.isEmpty {
+        out("")
+        out("Polling shells (\(s.polls.count))")
+        for p in s.polls { out("  pid \(p.pid)  \(p.minutes) min\(p.stale ? "  stale" : "")  \(String(p.command.prefix(100)))") }
+    }
+}
+
 func cliPath() -> String {
     let installed = NSHomeDirectory() + "/.local/bin/headroom"
     if FileManager.default.isExecutableFile(atPath: installed) { return installed }
@@ -306,10 +389,19 @@ case "hook":
     let agent: Hook.Agent = Args(rest, valued: []).flags.contains("codex") ? .codex : .claudeCode
     let input = FileHandle.standardInput.readDataToEndOfFile()
     let decision = Hook.decide(input: input, agent: agent) { try? client.status() }
-    if let d = decision, let data = Hook.render(d) {
-        FileHandle.standardOutput.write(data + Data("\n".utf8))
+    var output = decision?.output
+    if let d = decision {
         Store.appendEvent("hook", ["agent": agent.rawValue, "advice": d.advice.rawValue, "kind": d.match.kind.rawValue,
                                    "command": String(d.command.prefix(200))], paths: client.paths)
+    }
+    // A recovery note waiting since a rescue, or a warning about the session's own health.
+    if let extra = Hook.sessionContext(input: input, paths: client.paths, sessions: { SessionWatcher.read(paths: client.paths) }) {
+        output = Hook.merge(output, event: extra.event, context: extra.context)
+        Store.appendEvent("hook", ["agent": agent.rawValue, "kind": "session", "event": extra.event,
+                                   "context": String(extra.context.prefix(300))], paths: client.paths)
+    }
+    if let o = output, let data = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .withoutEscapingSlashes]) {
+        FileHandle.standardOutput.write(data + Data("\n".utf8))
     }
     exit(0)
 
@@ -332,7 +424,21 @@ case "install-hook":
       "hooks": {
         "PreToolUse": [
           {
-            "matcher": "Bash",
+            "hooks": [
+              { "type": "command", "command": "\(path) hook", "timeout": 5 }
+            ]
+          }
+        ],
+        "SessionStart": [
+          {
+            "matcher": "resume",
+            "hooks": [
+              { "type": "command", "command": "\(path) hook", "timeout": 5 }
+            ]
+          }
+        ],
+        "UserPromptSubmit": [
+          {
             "hooks": [
               { "type": "command", "command": "\(path) hook", "timeout": 5 }
             ]
@@ -340,6 +446,9 @@ case "install-hook":
         ]
       }
     }
+
+    PreToolUse checks heavy Bash commands against the memory advice and warns a session that is bloating.
+    SessionStart and UserPromptSubmit hand a rescued session its recovery note when it starts again.
 
     Add the MCP server with the Claude Code CLI:
 
@@ -470,8 +579,8 @@ case "guard":
             let k = String(kv[..<eq]), v = String(kv[kv.index(after: eq)...])
             guard dict[k] != nil else { fail("unknown limit \(k); known: \(dict.keys.sorted().joined(separator: ", "))") }
             switch k {
-            case "armed":
-                guard let b = ["true": true, "yes": true, "on": true, "1": true, "false": false, "no": false, "off": false, "0": false][v.lowercased()] else { fail("armed takes true or false") }
+            case "armed", "rescueSessions":
+                guard let b = ["true": true, "yes": true, "on": true, "1": true, "false": false, "no": false, "off": false, "0": false][v.lowercased()] else { fail("\(k) takes true or false") }
                 dict[k] = b
             case "gentlePatterns":
                 dict[k] = v.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -525,6 +634,10 @@ case "guard":
         if !r.gentlePatterns.isEmpty {
             out("Gentle      \(r.gentlePatterns.joined(separator: ", ")): stopped only alone, past \(Format.gb(r.growthFloorGB)), never as a job or for low memory.")
         }
+        out("Sessions    " + (r.rescueSessions
+            ? "rescue a desktop session that stops working while bloated or busy, after \(Int(r.rescueConfirmScans)) scans a minute apart: save its work, then stop it."
+            : "rescue is off; failing sessions are only reported (headroom guard set rescueSessions=true)."))
+        if let st = GuardStore.readState(paths: gp), let last = st.lastRescue { out("            \(st.rescues ?? 0) rescues since start. Last: \(last)") }
         if let text = try? String(contentsOf: gp.events, encoding: .utf8) {
             let lines = text.split(separator: "\n").filter { $0.contains("\"type\":\"guard\"") && !$0.contains("\"action\":\"start\"") }
             if !lines.isEmpty { out(""); out("Recent guard events") }
@@ -532,6 +645,53 @@ case "guard":
         }
     default:
         fail("unknown guard command \(sub); see headroom help")
+    }
+
+case "sessions":
+    let a = Args(rest, valued: [])
+    let doc = currentSessions()
+    if a.flags.contains("json") {
+        out(String(decoding: (try? JSON.encoder(pretty: true).encode(doc)) ?? Data(), as: UTF8.self))
+    } else {
+        printSessions(doc)
+    }
+
+case "session":
+    let a = Args(rest, valued: [])
+    guard let key = a.positional.first else { fail("session needs a pid, a session id or part of a title") }
+    let s = findSession(key, in: currentSessions())
+    if a.flags.contains("json") {
+        out(String(decoding: (try? JSON.encoder(pretty: true).encode(s)) ?? Data(), as: UTF8.self))
+    } else {
+        printSession(s)
+    }
+
+case "rescue":
+    let a = Args(rest, valued: ["reason"])
+    guard let key = a.positional.first else { fail("rescue needs a pid, a session id or part of a title") }
+    let procs = Sampler().readProcesses()
+    let doc = SessionWatcher(paths: client.paths).scan(procs: procs)
+    let s = findSession(key, in: doc)
+    let dry = a.flags.contains("dry-run")
+    let reason = a.options["reason"] ?? (s.notes.isEmpty ? "a person asked for it" : s.notes.joined(separator: ", "))
+    do {
+        let r = try SessionRescue.rescue(s, procs: procs, paths: client.paths, reason: reason, stop: !dry)
+        out("Ledger      \(r.markdown.path)")
+        out("            \(r.ledger.unread.count) undelivered messages, \(r.ledger.subagentsWaiting.count) subagents waiting on a tool, \(r.ledger.subagentsRecent.count) other active subagents")
+        if dry {
+            out("Dry run     nothing was stopped.")
+        } else if r.stopped {
+            out("Stopped     pid \(s.pid), freeing about \(Format.gb(r.freedGB)).")
+            out(s.inApp ? "Resume      the desktop app resumes the session on the next message; it receives the recovery note when it starts."
+                        : "Resume      run `claude --resume \(s.sessionId ?? "")` in \(Format.shortPath(s.cwd ?? "?")); the session receives the recovery note when it starts.")
+            out("            Without the SessionStart hook, paste this into the session:")
+            out("")
+            out(r.ledger.resumeMessage)
+        } else {
+            out("Not stopped pid \(s.pid) did not exit; the ledger is written.")
+        }
+    } catch {
+        fail("\(error)")
     }
 
 case "help", "--help", "-h":
