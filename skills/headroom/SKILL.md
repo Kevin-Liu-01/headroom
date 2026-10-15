@@ -81,9 +81,8 @@ It never stops the Claude or Codex apps, agent sessions, apps the person opened,
 
 ## Workflows and parallel agents
 
-- Cap concurrency. Run research or review fan-outs through a pool of at most 5 agents, and heavy trials 2 at a time.
-- Keep one dev server per session, and stop it as soon as its check is done.
-- Run browser-driving or build agents one at a time.
+- There is no fixed cap on heavy jobs or agents. Check each heavy job with its own estimate, `headroom can-start --gb N && <job>`, and start as many as Headroom allows. Its lines already count what is running and how much memory is free.
+- Stop each dev server, browser and watcher as soon as its check is done.
 - In a torch environment on MPS, set `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.35` and `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.3`. That caps the MPS allocator near 37 GB, and a runaway model then fails in its own process.
 
 ## Commands
