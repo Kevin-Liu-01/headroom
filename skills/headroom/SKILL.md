@@ -1,6 +1,6 @@
 ---
 name: headroom
-description: Check this Mac's memory before adding load, and respect what Headroom advises. Headroom is a macOS menu bar app with a `headroom` CLI. It reports how much memory the Claude and Codex apps and each agent session use, and it advises ok, hold or critical. Use before starting a build, a test run that opens browsers, a dev server, a headless browser, a local model run, a long ffmpeg encode, a container, more agents or a workflow. Also use when a Headroom hook message, an alert or the person mentions memory, hold or critical; to announce a heavy job; and to ask the person to pause, quit or resume a process you did not start.
+description: Check this Mac's memory before adding load, and respect what Headroom advises. Headroom is a macOS menu bar app with a `headroom` CLI. It reports how much memory the Claude and Codex apps and each agent session use, and it advises ok, hold or critical. Use before starting a build, a test run that opens browsers, a dev server, a headless browser, a local model run, a long ffmpeg encode, a container, more agents or a workflow. Also use when a Headroom hook message, an alert or the person mentions memory, hold or critical; to announce a heavy job; and to ask the person to pause, quit or resume a process you did not start. Also use at milestones to check your own session's health (`headroom session <pid>`), to save your work and hand off before your session freezes, and to clean up your own screenshots and outputs.
 ---
 
 # Headroom
@@ -36,23 +36,31 @@ Heavy work is any of the following:
 
 The lines count the work agents start (builds, servers, browsers, model runs), not the sessions' own Claude Code and Codex processes. A bloated or stuck session gets a note in `headroom status` instead; it does not hold your work.
 
-## Your own session's health
+## Your own session's health: watch it, rescue yourself, clean up
 
-A session's own process grows with its conversation, and only a restart frees it. On 2026-10-14 a coordinator session with fifteen subagents grew to 29 GB, with 3,700 images in a 1.8 GB conversation, and froze for hours. It answered nobody, and none of its subagents could move.
+Don't count on anyone rescuing your session. Unless automatic rescue is on, Headroom's guard reports a failing session but does not stop it, so look after your own. A session's process grows with its conversation, and only a fresh session frees it. On 2026-10-14 a coordinator session with fifteen subagents grew to 29 GB, with 3,700 images in a 1.8 GB conversation, and froze for hours. It answered nobody, and none of its subagents could move.
 
-- Find your own session process by walking up from your shell: `ps -o pid=,ppid=,command= -p $$`, then each parent until the `claude` process. Never pick it by folder, because several sessions often share one folder.
-- `headroom session <your pid>` shows your conversation's size and images, your unread messages, your subagents waiting on a tool, your polling shells and your health.
-- When Headroom's hook warns you about your session:
-  - Keep new images and long outputs out of the conversation. Resize screenshots before reading them, read files in ranges, and let a subagent look at bulky material and report back in a few lines.
-  - Wait with one background monitor rather than many `until …; do sleep …; done` loops, and stop loops whose result you no longer need.
-  - Run fewer subagents at once. If the session keeps growing, write a handoff and continue in a fresh session.
-- When you receive a Headroom recovery message, your process was restarted to save your work and free its memory.
-  1. Read the recovery note it names.
-  2. Resume each subagent that was waiting on a tool by messaging its id, and tell it to run its last step again.
-  3. Act on the undelivered messages.
-  4. Answer the person's messages and say the session was restarted.
-- Never run `headroom rescue` on another session yourself. Rescue is for the person or for the guard, which rescues a desktop session by itself once it has been failing for three minutes.
-- Chain checks with `&&`, never `;`: `headroom can-start --gb 4 && <job>`. With `;` the job starts even when the answer is no.
+1. **Find your own session process.** Walk up from your shell with `ps -o pid=,ppid=,command= -p $$`, then each parent, until you reach the `claude` process. Never pick a process by its folder; several sessions often share one.
+2. **Check yourself** at every milestone, and at least every 30–60 minutes: `headroom session <your pid>`. It shows your own process's memory, your conversation's size and image count, unread messages, subagents waiting on a tool, polling shells and health flags. Headroom's hook also warns you when a flag goes up.
+3. **Act on the flags.**
+   - **heavy** (conversation over 500 MB or 1,000 images) or **bloated** (own process over 16 GB): stop feeding the conversation.
+     - Downscale screenshots before reading them: `sips -Z 1200 shot.png --out /tmp/shot-small.png`. Read only the region you need.
+     - Have a subagent look at bulky images, logs and diffs and report back in a few lines.
+     - Read files in ranges and cap command output (`| head`, `| tail`).
+   - **polling**: stop loops whose result you no longer need. Wait with one background monitor, not many `until …; do sleep …; done` loops.
+   - **busy** (your process keeps a CPU core busy): run fewer subagents at once.
+4. **Rescue yourself before you freeze.** If you are bloated, or heavy and still growing, or your replies and tool results are slowing down, do this now, while you can still answer:
+   1. Commit and push your work in progress.
+   2. Write a handoff file, `HANDOFF-<date>.md`, in your repo or scratchpad. Include the goal, what is done, what is in flight, every subagent id with its task and last step, the unread messages, open questions, the exact next steps, and paths to everything.
+   3. Tell the person in one short message: your session is at X GB with Y images, the handoff path, and the line that starts a fresh session: "Read <path> and continue."
+   4. Keep making small progress until the person switches.
+5. **Clean up after yourself as you go, without being asked.**
+   - Delete your own screenshots, renders, traces and temporary files once you have used them. Keep only finals the person needs.
+   - Before any large batch, run `df -h /System/Volumes/Data`. Under 30 GB free, prune your own outputs first: old screenshots, traces, and `.next` or `dist` folders in your own worktrees.
+   - Never delete other sessions' files, and never empty the Trash.
+6. **If you receive a Headroom recovery message,** someone rescued your session to free its memory. Read the recovery note it names, resume each subagent that was waiting on a tool by messaging its id, act on the undelivered messages, then answer the person's messages and say the session was restarted.
+7. Never run `headroom rescue` on another session.
+8. Chain checks with `&&`, never `;`: `headroom can-start --gb 4 && <job>`. With `;` the job starts even when the answer is no. Start as many jobs as can-start allows. Don't sit idle: when one thing waits, work on another.
 
 ## The runaway guard
 
