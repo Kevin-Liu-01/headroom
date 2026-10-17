@@ -11,7 +11,7 @@ struct AppWindowView: View {
     /// The history pane's width when rendered; the window sizes it otherwise.
     var renderWidth: CGFloat = 720
 
-    static let minSize = NSSize(width: 1040, height: 680)
+    static let minSize = NSSize(width: 1120, height: 680)
     static let defaultSize = NSSize(width: 1180, height: 780)
 
     var body: some View {
@@ -101,7 +101,8 @@ struct HistoryPane: View {
                    width: width - 2 * HistoryPane.pad, height: 220, rendering: rendering)
             .padding(.horizontal, HistoryPane.pad)
             .padding(.bottom, 16)
-            .opacity(history.loading ? 0.6 : 1)
+            // Dimmed only while another range loads, not for the reload every minute.
+            .opacity(history.loading && data.range != history.range ? 0.6 : 1)
     }
 
     // MARK: Stats
@@ -246,6 +247,7 @@ struct HistoryPane: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             .padding(.leading, 18)
+            .layoutPriority(-1)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, HistoryPane.pad)

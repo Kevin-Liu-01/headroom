@@ -185,6 +185,37 @@ struct TrackTests {
         #expect(ranks[0].seconds == 120)
     }
 
+    @Test func version1SamplesBecomeTheFirstDays() throws {
+        let paths = Fixture.tempPaths()
+        func iso(_ seconds: Double) -> String { Format.iso(Date(timeIntervalSince1970: TrackTests.t0 + seconds)) }
+        var lines: [String] = [#"{"pid":1,"time":"\#(iso(-7200))","type":"start","version":"1.0.0"}"#]
+        // Version 1.0 logged Claude only; later versions the agents' total and Codex too.
+        for i in 0..<3 {
+            lines.append(#"{"advice":"ok","claudeGB":10,"freePercent":80,"freeGB":102.4,"sessions":[{"app":"claude","gb":6,"label":"web-app","pid":5}],"time":"\#(iso(-7200 + Double(i) * 20))","type":"sample"}"#)
+        }
+        lines.append(#"{"type":"hook","time":"\#(iso(-7100))","advice":"hold"}"#)
+        for i in 0..<6 {
+            lines.append(#"{"advice":"hold","agentsGB":50,"claudeGB":30,"codexGB":20,"freePercent":60,"freeGB":76.8,"swapUsedGB":1.5,"largest":[{"gb":12,"name":"node","pid":9}],"time":"\#(iso(-3600 + Double(i) * 20))","type":"sample"}"#)
+        }
+        // A sample after the record began is left to the record.
+        lines.append(#"{"advice":"ok","agentsGB":99,"claudeGB":99,"freePercent":50,"time":"\#(iso(600))","type":"sample"}"#)
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: paths.dir.appendingPathComponent("events.1.jsonl"))
+        Track.append([TrackTests.minute(5, 20)], to: paths.minutes(day: Track.day(TrackTests.t0 + 300)), paths: paths)
+
+        let n = Track.importVersion1(paths: paths, totalGB: 128, now: Date(timeIntervalSince1970: TrackTests.t0 + 900))
+        #expect(n == 3, "one minute from 1.0 and two from the later version")
+        let mins = Track.minutes(paths: paths, from: TrackTests.t0 - 86_400, to: TrackTests.t0 + 3600)
+        #expect(mins.count == 4)
+        #expect(mins[0].agents.max == 10 && mins[0].n == 3 && mins[0].sessions.first?.name == "web-app")
+        #expect(mins[1].level == .warning && mins[1].warningMinutes == 1, "hold became warning")
+        #expect(mins[1].codex.max == 20 && mins[1].swap == 1.5 && mins[1].processes.first?.name == "node")
+        #expect(abs(mins[1].used.max - 51.2) < 0.001)
+        #expect(mins.allSatisfy { $0.agents.max != 99 })
+        let hours = Track.decodeLines(try Data(contentsOf: paths.hours))
+        #expect(hours.map(\.t) == [TrackTests.t0 - 7200, TrackTests.t0 - 3600], "the hour the record began in is left to the recorder")
+        #expect(Track.importVersion1(paths: paths, totalGB: 128) == 0, "it runs once")
+    }
+
     @Test func minutesOlderThanTheKeepAreDeleted() throws {
         let paths = Fixture.tempPaths()
         let now = Date(timeIntervalSince1970: TrackTests.t0)

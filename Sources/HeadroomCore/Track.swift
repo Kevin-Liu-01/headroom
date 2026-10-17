@@ -115,7 +115,7 @@ public struct Rollup: Codable, Equatable, Sendable, Identifiable {
         minutes = 0
         warningMinutes = 0
         criticalMinutes = 0
-        peakT = now
+        peakT = now.rounded()
         sessions = s.sessions.prefix(3).map { Holder(name: $0.label, gb: $0.totalGB, app: $0.app) }
         processes = s.largest.prefix(3).map { Holder(name: $0.name, gb: $0.gb, app: $0.app, session: $0.session) }
     }
@@ -433,6 +433,73 @@ public enum Track {
             }
         }
         return ranks.values.sorted { $0.peakGB > $1.peakGB }.prefix(limit).map { $0 }
+    }
+
+    // MARK: Version 1
+
+    /// Version 1 logged a summary of every sample to events.jsonl, rotated to events.1.jsonl at 10 MB. Builds
+    /// minutes and hours from those samples for the time before the record began, once, so the history starts
+    /// with what version 1 saw. Returns the number of minutes written.
+    @discardableResult
+    public static func importVersion1(paths: Paths, totalGB: Double, now: Date = Date()) -> Int {
+        let marker = paths.track.appendingPathComponent(".imported-v1")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return 0 }
+        // Only the time before the first minute the record holds, so nothing is counted twice.
+        let first = minuteDays(paths: paths).first.flatMap { d in
+            decodeLines((try? Data(contentsOf: paths.minutes(day: d))) ?? Data()).map(\.t).min()
+        }
+        let cutoff = first ?? now.timeIntervalSince1970
+        let tag = Data(#""type":"sample""#.utf8)
+        var samples: [Rollup] = []
+        for name in ["events.1.jsonl", "events.jsonl"] {
+            guard let data = try? Data(contentsOf: paths.dir.appendingPathComponent(name)) else { continue }
+            for line in data.split(separator: 0x0A) {
+                let bytes = Data(line)
+                guard bytes.range(of: tag) != nil,
+                      let o = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                      let time = (o["time"] as? String).flatMap(Format.parseISO) else { continue }
+                let t = time.timeIntervalSince1970
+                guard t < cutoff else { continue }
+                if let r = version1Sample(o, t: t, totalGB: totalGB) { samples.append(r) }
+            }
+        }
+        let minutes = rollUp(samples, seconds: 60).map { $0.finishedMinute() }
+        var byDay: [String: [Rollup]] = [:]
+        for m in minutes { byDay[day(m.t), default: []].append(m) }
+        for (d, list) in byDay.sorted(by: { $0.key < $1.key }) { append(list, to: paths.minutes(day: d), paths: paths) }
+        // Whole hours only before the hour the record began in: that hour is rolled up from all its minutes later.
+        let open = (min(cutoff, now.timeIntervalSince1970) / 3600).rounded(.down) * 3600
+        append(rollUp(minutes, seconds: 3600).filter { $0.t < open }, to: paths.hours, paths: paths)
+        try? FileManager.default.createDirectory(at: paths.track, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? Data("\(minutes.count) minutes from version 1's log\n".utf8).write(to: marker)
+        return minutes.count
+    }
+
+    /// One version 1 sample line as a single-sample minute. Version 1.0 logged no agents' total, only Claude's.
+    static func version1Sample(_ o: [String: Any], t: Double, totalGB: Double) -> Rollup? {
+        func num(_ k: String) -> Double? { (o[k] as? NSNumber)?.doubleValue }
+        guard let claude = num("claudeGB"), let free = num("freePercent") else { return nil }
+        let codex = num("codexGB") ?? 0
+        let agents = num("agentsGB") ?? claude + codex
+        let freeGB = num("freeGB") ?? totalGB * free / 100
+        let level: Level = switch o["advice"] as? String {
+        case "critical": .critical
+        case "hold": .warning
+        default: .ok
+        }
+        let sessions = (o["sessions"] as? [[String: Any]] ?? []).compactMap { s -> Holder? in
+            guard let label = s["label"] as? String else { return nil }
+            return Holder(name: label, gb: (s["gb"] as? NSNumber)?.doubleValue ?? 0,
+                          app: (s["app"] as? String).flatMap(AgentApp.init(rawValue:)) ?? .claude)
+        }
+        let processes = (o["largest"] as? [[String: Any]] ?? []).compactMap { p -> Holder? in
+            guard let name = p["name"] as? String else { return nil }
+            return Holder(name: name, gb: (p["gb"] as? NSNumber)?.doubleValue ?? 0)
+        }
+        return Rollup(t: (t / 60).rounded(.down) * 60, seconds: 60, n: 1, agents: Span(agents), claude: Span(claude),
+                      codex: Span(codex), used: Span(max(0, totalGB - freeGB)), free: Span(free),
+                      swap: num("swapUsedGB") ?? 0, compressed: num("compressedGB") ?? 0, total: totalGB, level: level,
+                      peakT: t.rounded(), sessions: sessions, processes: processes)
     }
 
     // MARK: Retention

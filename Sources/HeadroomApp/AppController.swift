@@ -56,7 +56,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
             Store.appendEvent("start", ["pid": Int(getpid()), "version": HeadroomInfo.version], paths: paths)
             setUpNotifications()
             let paths = self.paths
-            sampleQueue.async { [weak self] in self?.recorder = Recorder(paths: paths) }
+            sampleQueue.async { [weak self] in
+                // The first start of version 2 builds the record's first days from version 1's log.
+                let imported = Track.importVersion1(paths: paths, totalGB: Double(SystemProbe.totalBytes()) / SystemProbe.gib)
+                if imported > 0 { Store.appendEvent("import", ["minutes": imported, "from": "version 1 log"], paths: paths) }
+                self?.recorder = Recorder(paths: paths)
+            }
         }
         historyModel.$range.dropFirst().removeDuplicates()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.reloadHistory() } }

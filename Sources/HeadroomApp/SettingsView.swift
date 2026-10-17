@@ -64,7 +64,7 @@ struct SettingsView: View {
             Rule(color: Tok.hairSoft)
             single("Sample every", $t.sampleSeconds, "s")
             Rule(color: Tok.hairSoft)
-            single("Sample while low", $t.lowSampleSeconds, "s")
+            single("Sample while raised", $t.lowSampleSeconds, "s")
             Spacer(minLength: 0)
         }
     }
