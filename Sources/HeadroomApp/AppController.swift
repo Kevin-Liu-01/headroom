@@ -6,7 +6,8 @@ import SwiftUI
 import UserNotifications
 
 /// The app: samples, records the history, writes state, alerts, and shows the menu bar item, its window and the
-/// app window. It reads memory and never acts on a process.
+/// app window. The one process it acts on is a recommended session restart: a desktop Claude Code session whose
+/// own process has grown, once a restart loses nothing, or when the person presses Restart.
 final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, WindowActions {
 
     let paths = Paths()
@@ -34,6 +35,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
     let historyQueue = DispatchQueue(label: "headroom.history", qos: .userInitiated)
     var sampling = false
     var subscriptions: Set<AnyCancellable> = []
+    let restartQueue = DispatchQueue(label: "headroom.restart", qos: .utility)
+    /// Sessions restarted or being restarted, by pid and start time, so none is tried twice.
+    var restarted: Set<String> = []
     /// Set by --snapshot-window or --snapshot-app: the PNG path for one capture of the live window.
     var snapshotPath: String?
     var snapshotApp = false
@@ -427,11 +431,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
         let writing = snapshotPath == nil
         sampleQueue.async { [weak self] in
             guard let self else { return }
-            var snap = sampler.sample()
+            var (snap, procs) = sampler.sampleWithProcesses()
             // trends, history and the recorder are touched only on sampleQueue.
             self.trends.apply(to: &snap)
             self.history.append(HistoryPoint(snap))
             let doc = Policy.status(snap, t, source: "app")
+            // Whether a restart loses nothing, for each session Headroom has a note about.
+            let noted = Set(doc.reasons.compactMap(\.pid))
+            var checks: [Int32: SessionRestart.Check] = [:]
+            for s in doc.snapshot.sessions where noted.contains(s.pid) && s.app == .claude && s.inApp && s.pid > 0 {
+                checks[s.pid] = SessionRestart.check(s, procs: procs, now: snap.time)
+            }
+            procs = []
             let evaluation = Policy.evaluate(snap, t)
             var minuteClosed = false
             if writing {
@@ -442,6 +453,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
             let points = self.history.points
             DispatchQueue.main.async {
                 self.model.history = points
+                self.model.restartChecks = checks
                 self.publish(doc, evaluation, minuteClosed: minuteClosed)
             }
         }
@@ -466,6 +478,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
             notify(alert)
         }
         if minuteClosed, mainWindow?.isVisible == true { reloadHistory() }
+        // A recommended restart that loses nothing happens on its own, one at a time.
+        if thresholds.restartIdleSessions, model.restarting.isEmpty {
+            let recommended = Set(SessionRestart.candidates(doc.snapshot, thresholds).map(\.pid))
+            if let c = model.restartChecks.values.filter({ $0.safe && recommended.contains($0.pid) }).max(by: { $0.gb < $1.gb }) {
+                restart(c, by: "headroom")
+            }
+        }
         let low = doc.level != .ok || doc.snapshot.system.pressure != .normal
         let want = low ? thresholds.lowSampleSeconds : thresholds.sampleSeconds
         if want != interval { schedule(want) }
@@ -526,6 +545,50 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
             SMAppService.openSystemSettingsLoginItems()
         }
         Store.appendEvent("settings", ["launchAtLogin": model.launchAtLogin], paths: paths)
+    }
+
+    /// The Restart button beside a session's note. When a restart would lose something, it asks first.
+    func restartSession(_ pid: Int32) {
+        guard let c = model.restartChecks[pid] else { return }
+        if !c.safe {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Restart \(c.label) now?"
+            alert.informativeText = "A restart now could lose work: \(c.reason). Its conversation is saved on disk and it resumes on your next message, but a turn or a job in progress stops."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Restart anyway")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        restart(c, by: "person")
+    }
+
+    /// Stops the session's own process off the main thread; the desktop app resumes the session on its next
+    /// message. Each process is tried once.
+    func restart(_ c: SessionRestart.Check, by who: String) {
+        let key = "\(c.pid):\(Int(c.startTime))"
+        guard !restarted.contains(key) else { return }
+        restarted.insert(key)
+        model.restarting.insert(c.pid)
+        let paths = self.paths
+        restartQueue.async { [weak self] in
+            let error = SessionRestart.stop(c)
+            Store.appendEvent("restart", ["session": c.label, "pid": Int(c.pid), "gb": c.gb, "by": who, "safe": c.safe,
+                                          "reason": c.reason, "error": error ?? NSNull()], paths: paths)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.model.restarting.remove(c.pid)
+                if let error {
+                    self.model.message = "Could not restart \(c.label): \(error)"
+                } else {
+                    self.model.message = "Restarted \(c.label), freeing \(Format.gb(c.gb))."
+                    self.post(title: "Restarted \(c.label)",
+                              body: "Its own Claude process held \(Format.gb(c.gb)). \(c.safe ? "It was idle with nothing queued, so nothing was lost. " : "")It resumes on your next message; its conversation is saved on disk.",
+                              sound: false)
+                }
+                self.sampleNow()
+            }
+        }
     }
 
     func quitHeadroom() {

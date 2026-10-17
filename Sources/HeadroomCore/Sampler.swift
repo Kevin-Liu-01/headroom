@@ -92,9 +92,14 @@ public final class Sampler: @unchecked Sendable {
     }
 
     public func sample(now: Date = Date()) -> Snapshot {
+        sampleWithProcesses(now: now).snapshot
+    }
+
+    /// A sample and the process table it was built from, for checks that look at a session's children.
+    public func sampleWithProcesses(now: Date = Date()) -> (snapshot: Snapshot, procs: [Proc]) {
         let system = SystemProbe.systemStats()
         let procs = readProcesses()
-        return Sampler.snapshot(procs: procs, system: system, time: now, skipped: lastSkipped)
+        return (Sampler.snapshot(procs: procs, system: system, time: now, skipped: lastSkipped), procs)
     }
 
     /// Builds a snapshot from processes and system numbers. Pure, so tests can call it.

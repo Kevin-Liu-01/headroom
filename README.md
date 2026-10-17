@@ -2,7 +2,7 @@
 
 ![The macOS Force Quit dialog after the system ran out of application memory, with Claude at 237.35 GB](docs/out-of-memory.png)
 
-Headroom is a macOS app that shows how much memory the Claude and Codex desktop apps, their agent sessions and every process those sessions start are using, and keeps a record of it. A menu bar item shows the agents' total at a glance. The app window shows memory now beside its history: a chart from the last hour to the whole record, the peaks, the time spent at warning and critical, and the days, warnings and sessions behind them. Headroom only reads memory. It never stops, pauses or signals a process, and it takes no messages from agents.
+Headroom is a macOS app that shows how much memory the Claude and Codex desktop apps, their agent sessions and every process those sessions start are using, and keeps a record of it. A menu bar item shows the agents' total at a glance. The app window shows memory now beside its history: a chart from the last hour to the whole record, the peaks, the time spent at warning and critical, and the days, warnings and sessions behind them. Headroom takes no messages from agents, and the one process it ever stops is a session it recommends restarting: a Claude Code session whose own process has grown, once restarting it loses nothing, or when you press its Restart button (see [Restarting a session](#restarting-a-session)).
 
 ## Screenshots
 
@@ -76,6 +76,20 @@ The settings window changes every line and the sampling. Settings are stored in 
 
 Headroom posts a notification each time the level gets worse, naming the largest sessions and processes. While the level stays at warning or critical, the notification repeats every 5 minutes. When the level returns to ok for three samples in a row, Headroom posts a recovery note. It also posts a notification each time a single process crosses another 16 GB step. Clicking a notification opens the app window. When macOS does not let Headroom post its own notifications, Headroom posts the same text as a banner through osascript.
 
+## Restarting a session
+
+A Claude Code session's own process grows with its conversation and only a restart frees it. When a desktop session's own process passes the process alert step (16 GB by default), its note in the windows says so and has a Restart button. A restart stops the process; the conversation is on disk, and the Claude app resumes the session on your next message.
+
+A restart loses nothing when all of these hold, read from the process table and the last 512 KB of the session's conversation file:
+
+- its last turn ended with a reply at least 10 minutes ago;
+- no message waits in its queue: nothing was enqueued after that reply, or everything was taken;
+- the last turn set no ScheduleWakeup, CronCreate, Monitor or RemoteTrigger, whose work outlives the turn;
+- none of its subagents wrote in the last 10 minutes, and no Bash tool shell of its, in the foreground or the background, is running;
+- its own process used less than 5 percent of a CPU core over the last 10 minutes.
+
+When they hold, the button is ink and Headroom restarts the session on its own, the largest first and one at a time, unless Settings turns that off. When they do not, the note says why, such as "Not yet: it replied 3 min ago", and the button reads Restart anyway, which asks first. A session started from a terminal and a Codex thread are never restarted: neither would come back on its own. Before it signals, Headroom checks that the pid still names the same process; it sends SIGTERM, and SIGKILL 30 seconds later if the process is still there. Each restart posts a notification and a `restart` event in the log. `headroom status --restart` prints the same check for every desktop session.
+
 ## The record
 
 Every sample folds into the minute it falls in. When a minute ends, Headroom writes it as one line to `history/<day>.jsonl` in its folder, one file per local day, and when an hour ends, it writes the hour as one line to `history/hours.jsonl`. Each line holds:
@@ -118,6 +132,7 @@ The `headroom` command works without the app. When `state.json` is older than 60
 ```sh
 headroom status                 # the level, the agents' totals, free memory, sessions by app, heavy jobs
 headroom status --json          # the same document as state.json
+headroom status --restart       # for every desktop session, whether a restart would lose anything
 headroom history                # the last 24 hours in up to 36 rows: peak, average, level and largest session
 headroom history 7d             # any range: 1h, 6h, 24h, 7d, 30d, 90d, all, or Nh or Nd
 headroom days 30d               # one row per day
@@ -139,7 +154,7 @@ A job fits when the level is ok, the free memory after it stays above the warnin
 
 ## Upgrading from 1.x
 
-Version 2 removes everything that agents talked to: the local HTTP API on port 7341 and its token, the MCP server, the `PreToolUse`, `SessionStart` and `UserPromptSubmit` hooks, agent notes and requests with their Approve and Deny buttons, session watch and rescue, the runaway guard, and the window's Pause, Quit and Restart buttons. `headroom hook` now exits 0 with no output, so a hook that is still configured lets every command run; remove it from `~/.claude/settings.json` or `~/.codex/config.toml`. `headroom note`, `request`, `mcp`, `sessions`, `session`, `rescue` and `guard` say they were removed and exit 1; remove a `headroom` MCP server with `claude mcp remove headroom` or `codex mcp remove headroom`. `scripts/build-app.sh` removes the guard's LaunchAgent, `com.kevinliu.headroom.guard`, if it is installed.
+Version 2 removes everything that agents talked to: the local HTTP API on port 7341 and its token, the MCP server, the `PreToolUse`, `SessionStart` and `UserPromptSubmit` hooks, agent notes and requests with their Approve and Deny buttons, session watch and rescue, the runaway guard, and the window's Pause, Quit and Restart Claude or Codex buttons. 2.1 brings back one action: restarting a bloated desktop session when nothing would be lost. `headroom hook` now exits 0 with no output, so a hook that is still configured lets every command run; remove it from `~/.claude/settings.json` or `~/.codex/config.toml`. `headroom note`, `request`, `mcp`, `sessions`, `session`, `rescue` and `guard` say they were removed and exit 1; remove a `headroom` MCP server with `claude mcp remove headroom` or `codex mcp remove headroom`. `scripts/build-app.sh` removes the guard's LaunchAgent, `com.kevinliu.headroom.guard`, if it is installed.
 
 Version 1's files stay in `~/Library/Application Support/Headroom` until they are deleted by hand: `token`, `guard.json`, `guard-state.json`, `hook-warned.json`, `sessions.json`, `sessions-scan.json`, `sessions-history.jsonl`, `recovery/` and `rescues/`. The record starts with version 2; version 1 kept only the last 60 minutes.
 
@@ -181,7 +196,7 @@ When a window first appears, macOS charges the process for the window's graphics
 
 ## Privacy
 
-Everything stays on the Mac, and Headroom makes no network requests and listens on no port. The state, the settings, the record and the log are files in `~/Library/Application Support/Headroom` that only the person's account can read. Headroom reads process paths, the arguments of interpreters such as node and python and of `codex` processes, the working directories of agent sessions and of the Codex app server's direct children, and the `Info.plist` of app bundles named ChatGPT or Codex to find the Codex app. The record holds session folder names and process names with their memory; the log holds alerts, which name the same. Neither holds file contents or command lines.
+Everything stays on the Mac, and Headroom makes no network requests and listens on no port. The state, the settings, the record and the log are files in `~/Library/Application Support/Headroom` that only the person's account can read. Headroom reads process paths, the arguments of interpreters such as node and python and of `codex` processes, the working directories of agent sessions and of the Codex app server's direct children, and the `Info.plist` of app bundles named ChatGPT or Codex to find the Codex app. The record holds session folder names and process names with their memory; the log holds alerts, which name the same. Neither holds file contents or command lines. For a session with a restart note, Headroom reads the end of its conversation file under `~/.claude/projects` to tell whether a restart would lose anything, and keeps nothing from it.
 
 ## License
 

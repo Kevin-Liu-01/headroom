@@ -341,11 +341,14 @@ public struct Reason: Codable, Equatable, Sendable {
     public var check: String
     public var level: Level
     public var message: String
+    /// For a note about a session, the session's pid.
+    public var pid: Int32?
 
-    public init(check: String, level: Level, message: String) {
+    public init(check: String, level: Level, message: String, pid: Int32? = nil) {
         self.check = check
         self.level = level
         self.message = message
+        self.pid = pid
     }
 }
 
@@ -363,6 +366,8 @@ public struct Thresholds: Codable, Equatable, Sendable {
     public var sampleSeconds: Double = 20
     public var lowSampleSeconds: Double = 5
     public var repeatMinutes: Double = 5
+    /// Restart a desktop session whose own process holds a process step or more, once a restart loses nothing.
+    public var restartIdleSessions = true
 
     public init() {}
 
@@ -382,6 +387,7 @@ public struct Thresholds: Codable, Equatable, Sendable {
         sampleSeconds = try c.decodeIfPresent(Double.self, forKey: .sampleSeconds) ?? d.sampleSeconds
         lowSampleSeconds = try c.decodeIfPresent(Double.self, forKey: .lowSampleSeconds) ?? d.lowSampleSeconds
         repeatMinutes = try c.decodeIfPresent(Double.self, forKey: .repeatMinutes) ?? d.repeatMinutes
+        restartIdleSessions = try c.decodeIfPresent(Bool.self, forKey: .restartIdleSessions) ?? d.restartIdleSessions
     }
 
     public static let defaults = Thresholds()

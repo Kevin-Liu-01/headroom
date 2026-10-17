@@ -127,6 +127,9 @@ struct MainView: View {
                 // Notes do not change the level: a bloated session, or pressure with memory free.
                 ForEach(Array(st.reasons.filter { $0.level == .ok }.enumerated()), id: \.offset) { _, r in
                     statusLine(r.check == "session" ? .arrowPath : .exclamationTriangle, Tok.ink2, r.message)
+                    if let pid = r.pid, let c = model.restartChecks[pid] {
+                        restartRow(c, auto: st.thresholds.restartIdleSessions)
+                    }
                 }
             }
             .padding(.top, 14)
@@ -149,6 +152,24 @@ struct MainView: View {
         .padding(.horizontal, MainView.pad)
         .padding(.top, 14)
         .padding(.bottom, 14)
+    }
+
+    /// Under a session's note: Restart, and whether a restart loses anything now.
+    func restartRow(_ c: SessionRestart.Check, auto: Bool) -> some View {
+        let busy = model.restarting.contains(c.pid)
+        let caption = busy ? "Restarting\u{2026}"
+            : c.safe ? (auto ? "Nothing would be lost, so Headroom restarts it on its own." : "Nothing would be lost; it resumes on your next message.")
+            : "Not yet: \(c.reason)."
+        return HStack(alignment: .center, spacing: MainView.gap) {
+            TextButton(title: c.safe ? "Restart" : "Restart anyway\u{2026}", glyph: .arrowPath, primary: c.safe && !busy,
+                       help: c.safe ? "Stop its process to free \(Format.gb(c.gb)); it resumes on your next message"
+                                    : "A restart now could lose work: \(c.reason)") {
+                if !busy { actions.restartSession(c.pid) }
+            }
+            .opacity(busy ? 0.5 : 1)
+            Text(caption).ty(.small).foregroundStyle(Tok.titanium).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.leading, MainView.slot + MainView.gap)
     }
 
     func statusLine(_ glyph: Glyph, _ color: Color, _ text: String) -> some View {

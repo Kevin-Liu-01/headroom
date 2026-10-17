@@ -20,6 +20,10 @@ final class AppModel: ObservableObject {
     @Published var message: String?
     /// True when macOS does not let Headroom post notifications.
     @Published var notificationsOff = false
+    /// For each session with a note, whether a restart loses nothing now.
+    @Published var restartChecks: [Int32: SessionRestart.Check] = [:]
+    /// Sessions whose restart is under way.
+    @Published var restarting: Set<Int32> = []
     /// The clock for relative times. The demo render pins it, so both themes say the same thing.
     var fixedNow: Date?
 }
@@ -142,6 +146,7 @@ final class HistoryModel: ObservableObject {
 /// The window's buttons. The app performs them; the renderer ignores them.
 protocol WindowActions: AnyObject {
     func openMainWindow()
+    func restartSession(_ pid: Int32)
     func openLog()
     func openSettings()
     func openNotificationSettings()
@@ -151,6 +156,7 @@ protocol WindowActions: AnyObject {
 
 final class NoActions: WindowActions {
     func openMainWindow() {}
+    func restartSession(_ pid: Int32) {}
     func openLog() {}
     func openSettings() {}
     func openNotificationSettings() {}

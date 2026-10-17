@@ -5,7 +5,7 @@ description: Headroom is the person's own macOS app for seeing this Mac's memory
 
 # Headroom
 
-Headroom is the person's memory viewer and history tracker: a menu bar item and an app window that show how much memory the Claude and Codex apps and their sessions use, and a record of it over days and months. It is for the person. It takes no messages from agents and never acts on a process.
+Headroom is the person's memory viewer and history tracker: a menu bar item and an app window that show how much memory the Claude and Codex apps and their sessions use, and a record of it over days and months. It is for the person and takes no messages from agents. The one thing it does on its own is restart a bloated desktop Claude Code session once the restart loses nothing; agents need not do anything about that.
 
 ## What an agent may do
 

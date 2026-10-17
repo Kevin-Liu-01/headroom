@@ -34,7 +34,7 @@ public struct Paths: Sendable {
 }
 
 public enum HeadroomInfo {
-    public static let version = "2.0.0"
+    public static let version = "2.1.0"
 }
 
 public enum Store {

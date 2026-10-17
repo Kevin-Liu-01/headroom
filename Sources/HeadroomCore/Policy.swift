@@ -90,7 +90,8 @@ public enum Policy {
             if own >= t.processStepGB { parts.append("holds \(Format.gb(own)) in its own \(x.app.name) process") }
             if stuck { parts.append("has kept \(Int(x.busyPercent ?? 0)) percent of a CPU core busy for 10 minutes, so it cannot answer") }
             reasons.append(Reason(check: "session", level: .ok,
-                                  message: "Session \(x.label) \(parts.joined(separator: " and ")). Its conversation is saved on disk, and a restart of the session frees its memory."))
+                                  message: "Session \(x.label) \(parts.joined(separator: " and ")). Its conversation is saved on disk, and a restart of the session frees its memory.",
+                                  pid: x.pid))
         }
 
         let level = reasons.map(\.level).max() ?? .ok

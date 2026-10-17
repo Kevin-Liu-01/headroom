@@ -9,8 +9,9 @@ let usage = """
 headroom: the memory levels of this Mac and of its Claude and Codex agents, now and over time.
 
 Usage:
-  headroom status [--json]                 Memory now: the level (ok, warning, critical), the agents' totals,
-                                           free memory, swap, sessions and heavy jobs.
+  headroom status [--json] [--restart]     Memory now: the level (ok, warning, critical), the agents' totals,
+                                           free memory, swap, sessions and heavy jobs. --restart says for every
+                                           desktop session whether a restart would lose anything.
   headroom history [RANGE] [--json]        The record over a range, in up to 36 rows: peak and average per row.
                                            RANGE is 1h, 6h, 24h (the default), 7d, 30d, 90d, all, or any Nh or Nd.
   headroom days [RANGE] [--json]           One row per day: peak, average, lowest free memory and time at warning
@@ -98,6 +99,22 @@ func appTotalText(_ t: AgentTotal) -> String {
     if t.appRunning { parts.append("app \(Format.gb(t.appGB ?? t.totalGB))") } else { parts.append("app not running") }
     if t.terminalGB > 0 { parts.append("terminals \(Format.gb(t.terminalGB))") }
     return "\(Format.gb(t.totalGB)) in \(t.processCount) processes (\(parts.joined(separator: ", ")))"
+}
+
+/// Whether restarting each session loses nothing: the recommended ones, or with `all` every desktop session.
+func printRestartChecks(_ d: StatusDocument, all: Bool) {
+    let list = all ? d.snapshot.sessions.filter { $0.app == .claude && $0.inApp && $0.pid > 0 }
+        : SessionRestart.candidates(d.snapshot, d.thresholds)
+    guard !list.isEmpty else { return }
+    let procs = Sampler().readProcesses()
+    out("")
+    out(all ? "Restart checks" : "Restart recommended")
+    for s in list {
+        let c = SessionRestart.check(s, procs: procs)
+        let own = Format.gb(s.processGB ?? 0)
+        out("  \(pad(s.label, 28)) \(pad(own, 9)) " + (c.safe ? "safe: nothing would be lost" : "not yet: \(c.reason)"))
+    }
+    if !all, d.thresholds.restartIdleSessions { out("  The Headroom app restarts a safe one on its own; Settings turns this off.") }
 }
 
 func printStatus(_ d: StatusDocument) {
@@ -231,7 +248,12 @@ switch command {
 case "status":
     let a = Args(rest, valued: [])
     let d = Store.currentStatus(paths: paths)
-    if a.flags.contains("json") { out(JSON.string(d, pretty: true)) } else { printStatus(d) }
+    if a.flags.contains("json") {
+        out(JSON.string(d, pretty: true))
+    } else {
+        printStatus(d)
+        printRestartChecks(d, all: a.flags.contains("restart"))
+    }
 
 case "history":
     let a = Args(rest, valued: ["range"])

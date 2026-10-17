@@ -65,6 +65,25 @@ struct SettingsView: View {
             single("Sample every", $t.sampleSeconds, "s")
             Rule(color: Tok.hairSoft)
             single("Sample while raised", $t.lowSampleSeconds, "s")
+            Rule()
+            head("Sessions", "A desktop session whose own Claude process passes the process alert step gets a Restart button. A restart frees that memory; the conversation is on disk and the session resumes on your next message.")
+            Rule(color: Tok.hairSoft)
+            HStack(spacing: 0) {
+                if rendering {
+                    Text(t.restartIdleSessions ? "Restarts on its own when nothing would be lost" : "Restarts only when you press Restart")
+                        .ty(.body).foregroundStyle(Tok.ink)
+                } else {
+                    Toggle(isOn: $t.restartIdleSessions) {
+                        Text("Restart on its own when nothing would be lost").ty(.body).foregroundStyle(Tok.ink)
+                    }
+                    .toggleStyle(CheckboxStyle())
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            Text("Nothing is lost when its last turn ended 10 minutes ago, nothing waits in its queue, it set no timer or monitor, and no subagent or shell of its has run in that time.")
+                .ty(.small).foregroundStyle(Tok.titanium).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16).padding(.bottom, 12)
             Spacer(minLength: 0)
         }
     }
