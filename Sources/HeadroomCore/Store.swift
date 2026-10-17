@@ -18,15 +18,23 @@ public struct Paths: Sendable {
     public var state: URL { dir.appendingPathComponent("state.json") }
     public var events: URL { dir.appendingPathComponent("events.jsonl") }
     public var settings: URL { dir.appendingPathComponent("settings.json") }
-    public var token: URL { dir.appendingPathComponent("token") }
+    /// The last 60 minutes, one line per sample.
     public var history: URL { dir.appendingPathComponent("history.jsonl") }
+    /// The long-term record: a file of minutes for each day and one file of hours (Track.swift).
+    public var track: URL { dir.appendingPathComponent("history", isDirectory: true) }
+    public var hours: URL { track.appendingPathComponent("hours.jsonl") }
 
-    public static let port: UInt16 = 7341
+    /// The minutes of one local day, such as history/2026-10-16.jsonl.
+    public func minutes(day: String) -> URL { track.appendingPathComponent("\(day).jsonl") }
 
     public func ensureDir() {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
     }
+}
+
+public enum HeadroomInfo {
+    public static let version = "2.0.0"
 }
 
 public enum Store {
@@ -44,6 +52,15 @@ public enum Store {
         return (doc, mtime)
     }
 
+    /// The app's state when state.json is at most `maxAge` seconds old, else a direct sample with the saved lines.
+    public static func currentStatus(paths: Paths, maxAge: TimeInterval = 60, sampler: Sampler? = nil) -> StatusDocument {
+        if let (doc, mtime) = readState(paths: paths), Date().timeIntervalSince(mtime) <= maxAge {
+            return doc
+        }
+        let snap = (sampler ?? Sampler()).sample()
+        return Policy.status(snap, loadThresholds(paths: paths), source: "direct")
+    }
+
     public static func loadThresholds(paths: Paths) -> Thresholds {
         guard let data = try? Data(contentsOf: paths.settings),
               let t = try? JSON.decoder().decode(Thresholds.self, from: data) else {
@@ -59,56 +76,10 @@ public enum Store {
         chmod(paths.settings.path, 0o600)
     }
 
-    /// Reads the API token, creating it with mode 0600 when `create` is true and none exists.
-    public static func token(paths: Paths, create: Bool) -> String? {
-        if let s = try? String(contentsOf: paths.token, encoding: .utf8) {
-            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !t.isEmpty {
-                if create { chmod(paths.token.path, 0o600) }
-                return t
-            }
-        }
-        guard create else { return nil }
-        paths.ensureDir()
-        var bytes = [UInt8](repeating: 0, count: 32)
-        arc4random_buf(&bytes, bytes.count)
-        let t = bytes.map { String(format: "%02x", $0) }.joined()
-        let fd = open(paths.token.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
-        guard fd >= 0 else { return nil }
-        defer { close(fd) }
-        let ok = t.withCString { write(fd, $0, strlen($0)) } > 0
-        fchmod(fd, 0o600)
-        return ok ? t : nil
-    }
-
     // MARK: Events
 
     private static let eventLock = NSLock()
     public static let maxEventBytes: UInt64 = 10 * 1024 * 1024
-
-    /// Appends lines to a JSONL file that keeps only its last `keepSeconds`: past 20 MB the file is rewritten
-    /// without rows whose "time" is older.
-    public static func appendRaw(_ rows: Data, to url: URL, keepSeconds: Double, now: Date = Date()) {
-        guard !rows.isEmpty else { return }
-        eventLock.lock()
-        defer { eventLock.unlock() }
-        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value,
-           size > 20 << 20, let old = try? Data(contentsOf: url) {
-            let cutoff = now.addingTimeInterval(-keepSeconds)
-            var kept = Data()
-            for line in old.split(separator: 0x0A) {
-                guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                      let t = (obj["time"] as? String).flatMap(Format.parseISO), t >= cutoff else { continue }
-                kept.append(Data(line))
-                kept.append(0x0A)
-            }
-            try? kept.write(to: url, options: .atomic)
-        }
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
-        guard fd >= 0 else { return }
-        defer { close(fd) }
-        _ = rows.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-    }
 
     /// Appends one JSON line to events.jsonl. Rotates to events.1.jsonl past 10 MB.
     public static func appendEvent(_ type: String, _ fields: [String: Any], paths: Paths, now: Date = Date()) {
@@ -146,26 +117,5 @@ public enum Store {
         default:
             return value
         }
-    }
-
-    /// The fields of a sample summary line.
-    public static func sampleFields(_ doc: StatusDocument) -> [String: Any] {
-        let s = doc.snapshot
-        return [
-            "advice": doc.advice.rawValue,
-            "agentsGB": s.agents.totalGB,
-            "claudeGB": s.claude.totalGB,
-            "claudeProcesses": s.claude.processCount,
-            "codexGB": s.codex.totalGB,
-            "codexProcesses": s.codex.processCount,
-            "freePercent": s.system.freePercent,
-            "freeGB": s.system.freeGB,
-            "swapUsedGB": s.system.swapUsedGB,
-            "compressedGB": s.system.compressedGB,
-            "pressure": s.system.pressure.rawValue,
-            "sessions": s.sessions.prefix(3).map { ["app": $0.app.rawValue, "label": $0.label, "gb": $0.totalGB, "pid": Int($0.pid)] as [String: Any] },
-            "largest": s.largest.prefix(3).map { ["name": $0.name, "gb": $0.gb, "pid": Int($0.pid)] as [String: Any] },
-            "reasons": doc.reasons.map(\.message),
-        ]
     }
 }

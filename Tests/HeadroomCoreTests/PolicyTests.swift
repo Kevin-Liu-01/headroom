@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HeadroomCore
 
-@Suite("Policy and advice")
+@Suite("Policy and levels")
 struct PolicyTests {
     let t = Thresholds.defaults
 
@@ -18,37 +18,37 @@ struct PolicyTests {
     }
 
     @Test(arguments: [(128.0, 60.0, 90.0), (64.0, 30.0, 45.0), (32.0, 15.0, 20.0), (16.0, 10.0, 15.0), (8.0, 5.0, 10.0)])
-    func newInstallLinesScaleWithMemory(total: Double, hold: Double, critical: Double) {
+    func newInstallLinesScaleWithMemory(total: Double, warning: Double, critical: Double) {
         let s = Thresholds.scaled(toMemoryGB: total)
-        #expect(s.agentsWarningGB == hold)
+        #expect(s.agentsWarningGB == warning)
         #expect(s.agentsCriticalGB == critical)
-        #expect(s.claudeWarningGB == hold && s.codexCriticalGB == critical)
+        #expect(s.claudeWarningGB == warning && s.codexCriticalGB == critical)
         #expect(s.freeWarningPercent == 30 && s.freeCriticalPercent == 15)
     }
 
     @Test func okWhenEverythingIsBelowTheLines() {
         let e = Policy.evaluate(Fixture.snapshot(claudeGB: 20, freePercent: 80), t)
-        #expect(e.advice == .ok)
+        #expect(e.level == .ok)
         #expect(e.reasons.isEmpty)
     }
 
-    @Test(arguments: [(39.9, Advice.ok), (40, .hold), (69.9, .hold), (70, .critical), (231.98, .critical)])
-    func claudeTotalLines(gb: Double, expected: Advice) {
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: gb), t).advice == expected)
+    @Test(arguments: [(39.9, Level.ok), (40, .warning), (69.9, .warning), (70, .critical), (231.98, .critical)])
+    func claudeTotalLines(gb: Double, expected: Level) {
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: gb), t).level == expected)
     }
 
-    @Test(arguments: [(30, Advice.ok), (29, .hold), (15, .hold), (14, .critical), (2, .critical)])
-    func freeMemoryLines(free: Int, expected: Advice) {
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, freePercent: free), t).advice == expected)
+    @Test(arguments: [(30, Level.ok), (29, .warning), (15, .warning), (14, .critical), (2, .critical)])
+    func freeMemoryLines(free: Int, expected: Level) {
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, freePercent: free), t).level == expected)
     }
 
-    @Test func pressureWarningHoldsOnlyWhenFreeMemoryIsLow() {
-        // With free memory above the hold line the warning is a note: the compressor holding idle memory.
+    @Test func pressureWarningRaisesOnlyWhenFreeMemoryIsLow() {
+        // With free memory above the warning line the system's warning is a note: the compressor holding idle memory.
         let roomy = Policy.evaluate(Fixture.snapshot(claudeGB: 1, pressure: .warning), t)
-        #expect(roomy.advice == .ok)
+        #expect(roomy.level == .ok)
         #expect(roomy.reasons.contains { $0.check == "pressure" && $0.level == .ok })
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, freePercent: 25, pressure: .warning), t).advice == .hold)
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, pressure: .critical), t).advice == .critical)
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, freePercent: 25, pressure: .warning), t).level == .warning)
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 1, pressure: .critical), t).level == .critical)
     }
 
     // MARK: Sessions
@@ -58,12 +58,12 @@ struct PolicyTests {
                      processCount: 3, inApp: true, top: [])
     }
 
-    @Test func bloatedSessionsDoNotHoldEveryAgent() {
+    @Test func bloatedSessionsDoNotRaiseTheLevel() {
         // 2026-10-14: Claude at 106 GB, 74 GB of it in two stuck sessions' own processes, 52 percent free.
         let sessions = [Self.session(5398, "gt-cloud", total: 61, own: 52, busy: 199), Self.session(1746, "cot", total: 23, own: 22, busy: 62)]
         let snap = Fixture.snapshot(claudeGB: 106, freePercent: 52, pressure: .warning, sessions: sessions)
         let e = Policy.evaluate(snap, t)
-        #expect(e.advice == .ok)
+        #expect(e.level == .ok)
         let notes = e.reasons.filter { $0.check == "session" }
         #expect(notes.count == 2)
         #expect(notes[0].message.contains("gt-cloud") && notes[0].message.contains("52.0 GB") && notes[0].message.contains("cannot answer"))
@@ -75,7 +75,7 @@ struct PolicyTests {
         // Work outside the session processes still holds: a 48 GB dev server and model run under a small session.
         let snap = Fixture.snapshot(claudeGB: 50, sessions: [Self.session(1, "web", total: 50, own: 2)])
         let e = Policy.evaluate(snap, t)
-        #expect(e.advice == .hold)
+        #expect(e.level == .warning)
         #expect(e.reasons[0].message.contains("48.0 GB of it outside the sessions' own processes"))
         #expect(!Policy.canStart(gb: 1, label: nil, status: Policy.status(snap, t, source: "test")).ok)
     }
@@ -89,7 +89,7 @@ struct PolicyTests {
 
     @Test func busySmallSessionGetsANoteAndQuietOnesDoNot() {
         let busy = Policy.evaluate(Fixture.snapshot(claudeGB: 5, sessions: [Self.session(7, "x", total: 3, own: 2, busy: 95)]), t)
-        #expect(busy.advice == .ok)
+        #expect(busy.level == .ok)
         #expect(busy.reasons.first?.message.contains("95 percent of a CPU core busy for 10 minutes") == true)
         let quiet = Policy.evaluate(Fixture.snapshot(claudeGB: 5, sessions: [Self.session(7, "x", total: 3, own: 2, busy: 4)]), t)
         #expect(quiet.reasons.isEmpty)
@@ -107,10 +107,10 @@ struct PolicyTests {
 
     @Test func worstCheckWinsAndEveryReasonIsListed() {
         let e = Policy.evaluate(Fixture.snapshot(claudeGB: 45, freePercent: 10), t)
-        #expect(e.advice == .critical)
+        #expect(e.level == .critical)
         #expect(e.reasons.map(\.check) == ["agents", "claude", "free"])
-        #expect(e.reasons[0].level == .hold)
-        #expect(e.reasons[1].level == .hold)
+        #expect(e.reasons[0].level == .warning)
+        #expect(e.reasons[1].level == .warning)
         #expect(e.reasons[2].level == .critical)
         #expect(e.reasons[2].message.contains("10 percent"))
     }
@@ -121,8 +121,8 @@ struct PolicyTests {
         custom.claudeCriticalGB = 20
         custom.agentsWarningGB = 100
         custom.agentsCriticalGB = 200
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 12), custom).advice == .hold)
-        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 25), custom).advice == .critical)
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 12), custom).level == .warning)
+        #expect(Policy.evaluate(Fixture.snapshot(claudeGB: 25), custom).level == .critical)
     }
 
     @Test func validationKeepsCriticalBeyondWarning() {
@@ -152,12 +152,16 @@ struct PolicyTests {
         #expect(e.bigProcesses[0].step == 2)
     }
 
-    @Test func guidanceSaysWhatToDo() {
-        #expect(Advice.hold.guidance.contains("start nothing new that is heavy"))
-        #expect(Advice.critical.guidance.contains("pause heavy jobs"))
-        #expect(Advice.critical.guidance.contains("stuck session"))
-        #expect(Advice.critical.guidance.contains("Codex"))
-        #expect(Advice.critical.guidance.contains("loses no conversation"))
+    @Test func guidanceSpeaksToThePerson() {
+        #expect(Level.ok.guidance == "Memory is fine.")
+        #expect(Level.warning.guidance.contains("Memory is high"))
+        #expect(Level.critical.guidance.contains("Codex"))
+        #expect(Level.critical.guidance.contains("saved on disk"))
+        for level in Level.allCases {
+            #expect(!level.guidance.contains("headroom "), "no command for an agent to run")
+            #expect(!level.guidance.lowercased().contains("agents may"))
+        }
+        #expect(Level.warning.title == "Warning")
     }
 
     // MARK: can-start
@@ -165,23 +169,23 @@ struct PolicyTests {
     @Test func canStartWhenThereIsRoom() {
         let r = Policy.canStart(gb: 8, label: "encode", status: Fixture.status(claudeGB: 10, freePercent: 80))
         #expect(r.ok)
-        #expect(r.advice == .ok)
+        #expect(r.level == .ok)
         #expect(r.freeGB == 102.4)
         #expect(r.label == "encode")
     }
 
-    @Test func cannotStartWhileHolding() {
+    @Test func cannotStartAtWarning() {
         let r = Policy.canStart(gb: 1, label: nil, status: Fixture.status(claudeGB: 45))
         #expect(!r.ok)
-        #expect(r.advice == .hold)
-        #expect(r.reason.contains("hold"))
+        #expect(r.level == .warning)
+        #expect(r.reason.contains("warning"))
     }
 
     @Test func cannotStartWhenTheJobWouldCrossTheFreeLine() {
         // 40 percent free is 51.2 GB. A 20 GB job leaves 31.2 GB, which is 24 percent.
         let r = Policy.canStart(gb: 20, label: nil, status: Fixture.status(claudeGB: 10, freePercent: 40))
         #expect(!r.ok)
-        #expect(r.reason.contains("hold line"))
+        #expect(r.reason.contains("warning line"))
     }
 
     @Test func aJobLargerThanFreeMemorySaysSo() {
@@ -209,13 +213,13 @@ struct PolicyTests {
 
         let hold = run(&engine, Fixture.status(claudeGB: 45), at: 20)
         #expect(hold.map(\.kind) == [.crossing])
-        #expect(hold[0].advice == .hold)
+        #expect(hold[0].level == .warning)
 
         #expect(run(&engine, Fixture.status(claudeGB: 46), at: 40).isEmpty)
 
         let crit = run(&engine, Fixture.status(claudeGB: 75), at: 60)
         #expect(crit.map(\.kind) == [.crossing])
-        #expect(crit[0].advice == .critical)
+        #expect(crit[0].level == .critical)
 
         // Still critical after five minutes: one repeat.
         #expect(run(&engine, Fixture.status(claudeGB: 75), at: 200).isEmpty)

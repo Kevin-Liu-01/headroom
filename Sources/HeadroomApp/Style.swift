@@ -50,11 +50,11 @@ enum Tok {
     static let claude = Color(nsColor: hex(0xD97757))
 }
 
-extension Advice {
+extension Level {
     var color: Color {
         switch self {
         case .ok: Tok.green
-        case .hold: Tok.amber
+        case .warning: Tok.amber
         case .critical: Tok.red
         }
     }
@@ -62,7 +62,7 @@ extension Advice {
     var nsColor: NSColor {
         switch self {
         case .ok: Tok.nsGreen
-        case .hold: Tok.nsAmber
+        case .warning: Tok.nsAmber
         case .critical: Tok.nsRed
         }
     }
@@ -244,12 +244,45 @@ struct CheckboxStyle: ToggleStyle {
     }
 }
 
-/// The status dot: the only place, besides icons, that carries the advice colour.
+/// The status dot: with the level strip under the history chart, the only places besides icons that carry the
+/// level colour.
 struct Dot: View {
-    var advice: Advice
+    var level: Level
     var size: CGFloat = 8
 
     var body: some View {
-        Circle().fill(advice.color).frame(width: size, height: size).accessibilityLabel("Advice \(advice.rawValue)")
+        Circle().fill(level.color).frame(width: size, height: size).accessibilityLabel("Level \(level.rawValue)")
+    }
+}
+
+/// A row of choices that reads as one control: hair border, the chosen segment filled with ink.
+struct Segmented<T: Hashable>: View {
+    var options: [T]
+    @Binding var selection: T
+    var label: (T) -> String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { i, o in
+                let on = o == selection
+                Button {
+                    selection = o
+                } label: {
+                    Text(label(o)).ty(.button).foregroundStyle(on ? Tok.paper : Tok.ink2)
+                        .padding(.horizontal, 9)
+                        .frame(height: 22)
+                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(on ? Tok.ink : .clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label(o))
+                .accessibilityAddTraits(on ? .isSelected : [])
+                if i < options.count - 1, o != selection, options[i + 1] != selection {
+                    Rectangle().fill(Tok.hairSoft).frame(width: 1, height: 12)
+                }
+            }
+        }
+        .padding(1)
+        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Tok.hair, lineWidth: 1))
     }
 }

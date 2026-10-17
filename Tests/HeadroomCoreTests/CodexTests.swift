@@ -261,16 +261,16 @@ struct CodexPolicyTests {
         let t = Thresholds.defaults
         #expect(t.codexWarningGB == 40 && t.codexCriticalGB == 70)
         #expect(t.agentsWarningGB == 40 && t.agentsCriticalGB == 70)
-        #expect(Policy.evaluate(snap(claude: 10, codex: 10), t).advice == .ok)
+        #expect(Policy.evaluate(snap(claude: 10, codex: 10), t).level == .ok)
         let combined = Policy.evaluate(snap(claude: 25, codex: 20), t)
-        #expect(combined.advice == .hold)
+        #expect(combined.level == .warning)
         #expect(combined.reasons.map(\.check) == ["agents"])
-        #expect(combined.reasons[0].message == "The agents use 45.0 GB in total, above the 40.0 GB hold line.")
+        #expect(combined.reasons[0].message == "The agents use 45.0 GB in total, above the 40.0 GB warning line.")
         let codex = Policy.evaluate(snap(claude: 1, codex: 72), t)
-        #expect(codex.advice == .critical)
+        #expect(codex.level == .critical)
         #expect(codex.reasons.map(\.check) == ["agents", "codex"])
         #expect(codex.reasons[1].message == "Codex uses 72.0 GB, above the 70.0 GB critical line.")
-        #expect(Policy.evaluate(snap(claude: 1, codex: 1, terminal: 41), t).advice == .hold, "terminal sessions count")
+        #expect(Policy.evaluate(snap(claude: 1, codex: 1, terminal: 41), t).level == .warning, "terminal sessions count")
     }
 
     @Test func theAdviceIsTheWorstOfTheLines() {
@@ -278,7 +278,7 @@ struct CodexPolicyTests {
         t.codexWarningGB = 5
         t.codexCriticalGB = 8
         let e = Policy.evaluate(snap(claude: 1, codex: 9), t)
-        #expect(e.advice == .critical)
+        #expect(e.level == .critical)
         #expect(e.reasons.map(\.check) == ["codex"])
     }
 
@@ -306,17 +306,7 @@ struct CodexPolicyTests {
         var engine = AlertEngine()
         let doc = Policy.status(s, .defaults, source: "test")
         let alerts = engine.step(doc, evaluation: Policy.evaluate(s, .defaults), now: Date())
-        #expect(alerts.first?.title == "Hold: agents 45.0 GB, 80% free")
-    }
-
-    @Test func restartCodexNeedsNoPid() {
-        let hub = Hub(paths: Fixture.tempPaths())
-        let router = APIRouter(hub: hub, token: "t")
-        let req = HTTPRequest(method: "POST", path: "/v1/requests", headers: ["host": "127.0.0.1", "authorization": "Bearer t"],
-                              body: Data(#"{"action":"restart-codex","reason":"Codex is at 80 GB"}"#.utf8))
-        #expect(router.handle(req).status == 201)
-        #expect(hub.pending.first?.action == .restartCodex)
-        #expect(RequestAction.restartCodex.restarts == .codex)
+        #expect(alerts.first?.title == "Warning: agents 45.0 GB, 80% free")
     }
 
     @Test func theStatusDocumentNamesBothApps() throws {
@@ -324,41 +314,8 @@ struct CodexPolicyTests {
         let json = JSON.string(doc)
         #expect(json.contains(#""codex":{"#))
         #expect(json.contains(#""agents":{"#))
-        #expect(json.contains(#""version":2"#))
+        #expect(json.contains(#""version":3"#))
         #expect(try JSON.decoder().decode(StatusDocument.self, from: Data(json.utf8)) == doc)
-    }
-}
-
-@Suite("Codex hook")
-struct CodexHookTests {
-    func output(_ command: String, _ status: StatusDocument) -> [String: Any]? {
-        guard let d = Hook.decide(input: Fixture.hookInput(command), agent: .codex, status: { status }),
-              let data = Hook.render(d) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    }
-
-    @Test func holdAddsContextOnly() throws {
-        let out = try #require(output("pnpm build", Fixture.status(claudeGB: 45)))
-        #expect(out.keys.sorted() == ["hookSpecificOutput"])
-        let h = try #require(out["hookSpecificOutput"] as? [String: Any])
-        #expect(h["permissionDecision"] == nil)
-        #expect((h["additionalContext"] as? String)?.contains("headroom wait --gb") == true)
-    }
-
-    @Test func criticalTellsThePersonAndNeverAsks() throws {
-        // Codex parses "ask" but does not support it yet, so the hook never returns it.
-        let out = try #require(output("ffmpeg -i a.mov b.mp4", Fixture.status(claudeGB: 90)))
-        let h = try #require(out["hookSpecificOutput"] as? [String: Any])
-        #expect(h["hookEventName"] as? String == "PreToolUse")
-        #expect(h["permissionDecision"] == nil)
-        #expect(h["permissionDecisionReason"] == nil)
-        #expect((out["systemMessage"] as? String)?.contains("critical") == true)
-        #expect((h["additionalContext"] as? String)?.contains("an encode") == true)
-    }
-
-    @Test func okAndLightCommandsPrintNothing() {
-        #expect(output("ffmpeg -i a b", Fixture.status(claudeGB: 5)) == nil)
-        #expect(output("ls", Fixture.status(claudeGB: 90)) == nil)
     }
 }
 

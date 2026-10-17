@@ -5,7 +5,7 @@ import HeadroomCore
 /// Claude and Codex both run, with sessions in each app and one of each started from a terminal. Each app's
 /// total is its app's processes plus its sessions, so a band is never smaller than its rows: Claude 39.6 GB
 /// (38.4 GB in the app, 1.2 GB in a terminal) and Codex 18.5 GB (14.6 GB in the app, 3.9 GB in a terminal).
-/// Neither app crosses its own line, and together the agents cross the 40 GB hold line at 58.1 GB.
+/// Neither app crosses its own line, and together the agents cross the 40 GB warning line at 58.1 GB.
 enum DemoData {
     /// The clock is pinned for one render, so the light and dark images say the same thing.
     static let now = Date()
@@ -86,14 +86,62 @@ enum DemoData {
         return out
     }
 
-    static func pending() -> [AgentRequest] {
-        [AgentRequest(id: "demo-1", action: .pause, pid: 48211, processName: "python3.12",
-                      reason: "The api test run needs about 6 GB, and Headroom advises hold. Pause the training run until the tests finish.",
-                      from: "~/code/api", createdAt: now.addingTimeInterval(-40))]
-    }
-
-    static func notes() -> [AgentNote] {
-        [AgentNote(id: "demo-note", text: "Starting a Playwright run of about 4 GB.", gb: 4, label: "playwright",
-                   pid: 48802, from: "~/code/web-app", time: now.addingTimeInterval(-300))]
+    /// A made-up week of the record, for the app window's screenshot: workdays that climb from the morning,
+    /// nights with the Mac asleep, warnings on three afternoons, one critical spike from a training run, and the
+    /// last minutes meeting the 58.1 GB of the snapshot.
+    static func record(range: HistoryRange = .week) -> HistoryData {
+        let end = (now.timeIntervalSince1970 / 60).rounded(.down) * 60
+        let start = end - 7 * 86_400
+        let cal = Calendar.current
+        var minutes: [Rollup] = []
+        var t = start
+        while t < end {
+            let d = Date(timeIntervalSince1970: t)
+            let hour = Double(cal.component(.hour, from: d)) + Double(cal.component(.minute, from: d)) / 60
+            let daysAgo = Int((end - t) / 86_400)
+            // Asleep from 1:00 to 7:30, except the last night, when a long job ran.
+            if hour >= 1, hour < 7.5, daysAgo != 2 { t += 60; continue }
+            let i = t / 60
+            let work = hour < 8 ? 0.2 : hour < 12 ? (hour - 8) / 4 : hour < 19 ? 1 : max(0.25, 1 - (hour - 19) / 5)
+            let noise = 1.4 * sin(i / 7) + 0.8 * sin(i / 2.3) + 0.5 * sin(i * 1.7)
+            var web = 4 + 7 * work + 0.4 * noise
+            var ml = 1.5 + 3 * work
+            var api = 3 + 6 * work + 0.5 * sin(i / 11)
+            var mobile = 1 + 3 * work
+            // A training run on the afternoon three days ago, and long builds on three afternoons.
+            if daysAgo == 3, hour >= 14, hour < 15.6 { ml += 22 + 26 * sin((hour - 14) / 1.6 * .pi) }
+            if [0, 1, 5].contains(daysAgo), hour >= 14.5, hour < 15.4 + Double(daysAgo) * 0.1 { web += 15; api += 6 }
+            if daysAgo == 0, end - t < 3600 {
+                // The last hour meets the snapshot: Claude 39.6 GB and Codex 18.5 GB.
+                let f = 1 - (end - t) / 3600
+                web = web + (11.9 + 1.4 + 1.2 + 0.9 - web) * f
+                ml = ml + (21.3 - ml) * f
+                api = api + (9.8 + 3.1 - api) * f
+                mobile = mobile + (3.9 + 1.7 - mobile) * f
+            }
+            let claude = web + ml, codex = api + mobile
+            let agents = claude + codex
+            let used = min(124, agents + 24 + 3 * work)
+            let free = max(3, 100 - used / 128 * 100)
+            let level: Level = agents >= 70 || free < 15 ? .critical : agents >= 40 || free < 30 ? .warning : .ok
+            let sessions = [Holder(name: "ml-experiments", gb: ml, app: .claude), Holder(name: "web-app", gb: web, app: .claude),
+                            Holder(name: "api", gb: api, app: .codex), Holder(name: "mobile", gb: mobile, app: .codex)]
+                .sorted { $0.gb > $1.gb }
+            let r = Rollup(t: t, seconds: 60, n: 3, agents: Span(min: agents - 0.4, avg: agents - 0.2, max: agents),
+                           claude: Span(claude), codex: Span(codex), used: Span(used), free: Span(free),
+                           swap: agents > 66 ? 2.4 : 0, compressed: 1.2 + agents / 30, total: 128, level: level, minutes: 1,
+                           warningMinutes: level == .warning ? 1 : 0, criticalMinutes: level == .critical ? 1 : 0,
+                           peakT: t + 40, sessions: Array(sessions.prefix(3)),
+                           processes: [Holder(name: ml > 15 ? "python3.12" : "node", gb: max(ml - 1, web * 0.5), app: .claude,
+                                              session: ml > 15 ? "ml-experiments" : "web-app")])
+            minutes.append(r)
+            t += 60
+        }
+        let from = range.seconds.map { end + 60 - $0 } ?? start
+        let shown = minutes.filter { $0.t >= from }
+        let series = Track.rollUp(shown, seconds: range == .week ? 900 : range == .day ? 120 : 60)
+        return HistoryData(range: range, from: from, to: end + 60, series: series, summary: Track.total(series),
+                           days: Track.daySummaries(of: Track.rollUp(minutes, seconds: 3600)),
+                           episodes: Track.episodes(in: shown), sessions: Track.sessionRanks(series), firstTime: start)
     }
 }

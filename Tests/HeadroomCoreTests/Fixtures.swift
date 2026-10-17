@@ -58,18 +58,4 @@ enum Fixture {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return Paths(dir: dir)
     }
-
-    static func hookInput(_ command: String, tool: String = "Bash") -> Data {
-        let obj: [String: Any] = [
-            "session_id": "abc123",
-            "transcript_path": "/Users/k/.claude/projects/x/abc123.jsonl",
-            "cwd": "/Users/k/code/web-app",
-            "permission_mode": "default",
-            "hook_event_name": "PreToolUse",
-            "tool_name": tool,
-            "tool_input": ["command": command, "description": "Run it", "timeout": 120000, "run_in_background": false],
-            "tool_use_id": "toolu_01ABC",
-        ]
-        return try! JSONSerialization.data(withJSONObject: obj)
-    }
 }

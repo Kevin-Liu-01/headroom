@@ -11,9 +11,9 @@ func writePNG(_ cg: CGImage, _ url: URL) -> Bool {
     return CGImageDestinationFinalize(dest)
 }
 
-/// `Headroom --render <dir>` draws the window, the settings window and the menu bar item to PNG at 2x, in light
-/// and dark, and the app icon at 1024 px. With `--demo` it draws a made-up machine instead, for screenshots that
-/// show no real project names.
+/// `Headroom --render <dir>` draws the app window, the menu bar window, the settings window and the menu bar item
+/// to PNG at 2x, in light and dark, and the app icon at 1024 px. With `--demo` it draws a made-up machine and a
+/// made-up week instead, for screenshots that show no real project names.
 @MainActor
 func renderScreenshots(to dir: String, demo: Bool = false, checksDir: String? = nil) -> Int32 {
     _ = NSApplication.shared
@@ -28,16 +28,15 @@ func renderScreenshots(to dir: String, demo: Bool = false, checksDir: String? = 
     model.status = doc
     if demo { model.fixedNow = DemoData.now }
     model.history = demo ? DemoData.history() : History.read(paths: paths).points
-    if demo {
-        model.pending = DemoData.pending()
-        model.notes = DemoData.notes()
-    } else if let live = try? LocalClient(paths: paths).liveAppStatus() {
-        // Pending requests, notes and session trends live in the running app. The renderer shows them when the app answers.
-        model.pending = live.pendingRequests
-        model.notes = live.notes
+    if !demo, let (live, _) = Store.readState(paths: paths) {
+        // Session trends live in the running app; its state file has them.
         model.status?.snapshot.sessions = live.snapshot.sessions
     }
     if let first = snap.sessions.first { model.expanded = [first.pid] }
+    let history = HistoryModel()
+    history.fixed = true
+    history.range = .week
+    history.data = demo ? DemoData.record() : HistoryData.load(.week, paths: paths)
     let actions = NoActions()
 
     var written: [String] = []
@@ -59,7 +58,19 @@ func renderScreenshots(to dir: String, demo: Bool = false, checksDir: String? = 
     for (name, scheme, appearance) in variants {
         let main = MainView(model: model, actions: actions, rendering: true).environment(\.colorScheme, scheme)
         let settings = SettingsView(t: thresholds, save: { _ in }, close: {}, rendering: true).environment(\.colorScheme, scheme)
-        guard render(main, "headroom-\(name).png", appearance), render(settings, "settings-\(name).png", appearance) else { return 1 }
+        history.tab = .days
+        // The app window at its default size; the Now column's rows run on below the fold, as in a scroll view.
+        let window = AppWindowView(model: model, history: history, actions: actions, rendering: true,
+                                   renderWidth: AppWindowView.defaultSize.width - MainView.width - 1)
+            .frame(width: AppWindowView.defaultSize.width, height: AppWindowView.defaultSize.height, alignment: .top)
+            .clipped()
+            .environment(\.colorScheme, scheme)
+        guard render(window, "app-\(name).png", appearance), render(main, "headroom-\(name).png", appearance),
+              render(settings, "settings-\(name).png", appearance) else { return 1 }
+        history.tab = .episodes
+        let warnings = HistoryPane(history: history, thresholds: thresholds, actions: actions, rendering: true, width: 720)
+            .background(Tok.paper).environment(\.colorScheme, scheme)
+        guard render(warnings, "history-warnings-\(name).png", appearance) else { return 1 }
         var ok = false
         NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
             if let rep = StatusArt.render(doc, dark: scheme == .dark), let cg = rep.cgImage {
@@ -113,9 +124,15 @@ if let i = args.firstIndex(of: "--render") {
 
 let app = NSApplication.shared
 let controller = AppController()
+controller.background = args.contains("--background")
 if let i = args.firstIndex(of: "--snapshot-window"), i + 1 < args.count {
-    // For checking the live window: opens it after the first sample, writes it to a PNG and exits.
+    // For checking the live menu bar window: opens it after the first sample, writes it to a PNG and exits.
     controller.snapshotPath = args[i + 1]
+}
+if let i = args.firstIndex(of: "--snapshot-app"), i + 1 < args.count {
+    // The same for the app window, once its history has loaded.
+    controller.snapshotPath = args[i + 1]
+    controller.snapshotApp = true
 }
 app.delegate = controller
 app.setActivationPolicy(.accessory)

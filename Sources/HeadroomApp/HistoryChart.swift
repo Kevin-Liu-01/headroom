@@ -1,12 +1,12 @@
 import HeadroomCore
 import SwiftUI
 
-/// The agents' total over the last 60 minutes: an ordered-dither area in ink under a 1 px ink line, the hold and
+/// The agents' total over the last 60 minutes: an ordered-dither area in ink under a 1 px ink line, the warning and
 /// critical lines as hair rules labelled in titanium in a gutter, and the current value as one GT blue dot.
 /// This is the window's one material.
 struct HistoryChart: View {
     var points: [HistoryPoint]
-    var hold: Double
+    var warning: Double
     var critical: Double
     var now: Date
     var width: CGFloat
@@ -38,7 +38,7 @@ struct HistoryChart: View {
             let depth = (CGFloat(yy) - ty) / max(1, CGFloat(h) - ty)
             return Double(0.55 - 0.4 * depth)
         }
-        let yHold = y(hold), yCrit = y(critical)
+        let yWarn = y(warning), yCrit = y(critical)
         let last = points.last.map { (x: min(plotWidth, CGFloat(($0.t - start) / History.window) * plotWidth), y: y($0.agents)) }
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -51,7 +51,7 @@ struct HistoryChart: View {
                     }
                     Canvas { ctx, _ in
                         // Each line cuts through the dither in paper, so it stays visible over the area.
-                        for ly in [yHold, yCrit] {
+                        for ly in [yWarn, yCrit] {
                             let r = CGRect(x: 0, y: ly.rounded(.down), width: plotWidth, height: 1)
                             ctx.fill(Path(r.insetBy(dx: 0, dy: -1)), with: .color(Tok.paper))
                             ctx.fill(Path(r), with: .color(Tok.hair))
@@ -77,7 +77,7 @@ struct HistoryChart: View {
                 .frame(width: plotWidth, height: HistoryChart.plotHeight)
                 ZStack(alignment: .topLeading) {
                     lineLabel("Critical \(Format.gb(critical))", y: yCrit)
-                    lineLabel("Hold \(Format.gb(hold))", y: max(yHold, yCrit + 15))
+                    lineLabel("Warning \(Format.gb(warning))", y: max(yWarn, yCrit + 15))
                 }
                 .frame(width: HistoryChart.gutter, height: HistoryChart.plotHeight, alignment: .topLeading)
             }

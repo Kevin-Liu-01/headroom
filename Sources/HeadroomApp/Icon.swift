@@ -62,7 +62,7 @@ enum IconArt {
 }
 
 /// The menu bar item: a template glyph whose bar fills toward the ceiling as the agents' total nears the
-/// critical line, the total in tabular Inter, and a small dot in the advice colour.
+/// critical line, the total in tabular Inter, and a small dot in the level colour.
 enum StatusArt {
     static let glyphSize = NSSize(width: 12, height: 16)
 
@@ -72,16 +72,16 @@ enum StatusArt {
         return min(1, max(0, doc.snapshot.agents.totalGB / max(1, doc.thresholds.agentsCriticalGB)))
     }
 
-    /// The share of the critical line at which the hold line sits, for the tick.
-    static func holdLevel(_ doc: StatusDocument?) -> Double {
+    /// The share of the critical line at which the warning line sits, for the tick.
+    static func warningLevel(_ doc: StatusDocument?) -> Double {
         guard let doc else { return 40.0 / 70.0 }
         return min(1, max(0, doc.thresholds.agentsWarningGB / max(1, doc.thresholds.agentsCriticalGB)))
     }
 
     /// Draws on whole points: a 1 pt ceiling across the top, and a column from the floor up to the ceiling whose
     /// fill rises with the level, so the empty run under the ceiling is the headroom and closes at critical.
-    /// A 1 pt hair outlines the column, and a 2 pt tick on its left marks the hold line.
-    static func drawGlyph(level: Double, hold: Double = 40.0 / 70.0, in rect: NSRect, color: NSColor) {
+    /// A 1 pt hair outlines the column, and a 2 pt tick on its left marks the warning line.
+    static func drawGlyph(level: Double, warning: Double = 40.0 / 70.0, in rect: NSRect, color: NSColor) {
         let x = rect.minX.rounded(), y = rect.minY.rounded(), w = rect.width.rounded(), h = rect.height.rounded()
         color.setFill()
         NSRect(x: x, y: y + h - 1, width: w, height: 1).fill()
@@ -94,13 +94,13 @@ enum StatusArt {
         color.setFill()
         let filled = (column.height * CGFloat(min(1, max(0, level)))).rounded()
         if filled > 0 { NSRect(x: column.minX, y: column.minY, width: column.width, height: filled).fill() }
-        let tick = (column.minY + column.height * CGFloat(hold)).rounded()
+        let tick = (column.minY + column.height * CGFloat(warning)).rounded()
         NSRect(x: x, y: tick, width: 2, height: 1).fill()
     }
 
-    static func templateImage(level: Double, hold: Double = 40.0 / 70.0) -> NSImage {
+    static func templateImage(level: Double, warning: Double = 40.0 / 70.0) -> NSImage {
         let img = NSImage(size: glyphSize, flipped: false) { rect in
-            drawGlyph(level: level, hold: hold, in: rect, color: .black)
+            drawGlyph(level: level, warning: warning, in: rect, color: .black)
             return true
         }
         img.isTemplate = true
@@ -113,7 +113,7 @@ enum StatusArt {
         var attrs: [NSAttributedString.Key: Any] = [.font: Inter.ns(13, tabular: true)]
         if let textColor { attrs[.foregroundColor] = textColor }
         s.append(NSAttributedString(string: " " + (doc.map { Format.gb($0.snapshot.agents.totalGB) } ?? "--"), attributes: attrs))
-        let dot = doc == nil ? NSColor.secondaryLabelColor : doc!.advice.nsColor
+        let dot = doc == nil ? NSColor.secondaryLabelColor : doc!.level.nsColor
         s.append(NSAttributedString(string: " \u{25CF}", attributes: [.foregroundColor: dot, .font: NSFont.systemFont(ofSize: 7),
                                                                      .baselineOffset: 2.5]))
         return s
@@ -138,7 +138,7 @@ enum StatusArt {
         let textSize = text.size()
         let total = glyphSize.width + textSize.width
         let x0 = ((size.width - total) / 2).rounded()
-        drawGlyph(level: level(doc), hold: holdLevel(doc), in: NSRect(x: x0, y: 4, width: glyphSize.width, height: glyphSize.height), color: fg)
+        drawGlyph(level: level(doc), warning: warningLevel(doc), in: NSRect(x: x0, y: 4, width: glyphSize.width, height: glyphSize.height), color: fg)
         text.draw(at: NSPoint(x: x0 + glyphSize.width, y: ((size.height - textSize.height) / 2).rounded()))
         ctx.flushGraphics()
         return rep

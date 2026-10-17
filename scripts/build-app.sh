@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds Headroom in release, assembles and ad hoc signs Headroom.app, installs it to
-# ~/Applications and the CLI to ~/.local/bin/headroom, and launches the app.
+# ~/Applications and the CLI to ~/.local/bin/headroom, and launches the app, which opens its window.
 # Pass --no-launch to skip the launch and --no-install to only assemble build/Headroom.app.
 set -euo pipefail
 
@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-VERSION="1.2.0"
+VERSION="2.0.0"
 echo "==> swift build -c release"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)"
@@ -70,9 +70,18 @@ codesign --verify --strict "$APP"
 
 if [ "$INSTALL" = 1 ]; then
   echo "==> installing"
+  # Quit the running app the way the person would, so it writes its last minute to the record.
   if pgrep -x Headroom >/dev/null; then
-    pkill -x Headroom || true
-    for _ in $(seq 1 20); do pgrep -x Headroom >/dev/null || break; sleep 0.25; done
+    osascript -e 'tell application id "com.kevinliu.headroom" to quit' >/dev/null 2>&1 || true
+    for _ in $(seq 1 40); do pgrep -x Headroom >/dev/null || break; sleep 0.25; done
+    for pid in $(pgrep -x Headroom); do kill "$pid" 2>/dev/null || true; done
+  fi
+  # Version 1 ran a runaway guard from launchd. Version 2 has none, so a leftover job would only fail and restart.
+  GUARD="$HOME/Library/LaunchAgents/com.kevinliu.headroom.guard.plist"
+  if [ -f "$GUARD" ] || launchctl print "gui/$(id -u)/com.kevinliu.headroom.guard" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/com.kevinliu.headroom.guard" 2>/dev/null || true
+    rm -f "$GUARD"
+    echo "    removed the version 1 guard's LaunchAgent"
   fi
   mkdir -p "$HOME/Applications" "$HOME/.local/bin"
   rm -rf "$HOME/Applications/Headroom.app"

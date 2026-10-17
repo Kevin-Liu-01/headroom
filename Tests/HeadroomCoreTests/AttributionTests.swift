@@ -167,16 +167,3 @@ struct PersonAppTests {
         #expect(!Attribution.isPersonApp(Fixture.proc(14, 1, "/opt/homebrew/bin/node", gb: 3)))
     }
 }
-
-@Suite("Process control checks")
-struct ProcessControlTests {
-    // These tests only call the checks. They send no signal.
-    @Test func aReusedPidIsRefused() throws {
-        let parent = getppid()
-        let info = try #require(SystemProbe.bsdInfo(parent))
-        #expect(ProcessControl.check(parent, startTime: info.startTime) == nil)
-        #expect(ProcessControl.check(parent, startTime: info.startTime - 3600)?.contains("another process") == true)
-        #expect(ProcessControl.check(1) != nil, "launchd is never signalled")
-        #expect(ProcessControl.check(getpid()) != nil, "Headroom never signals itself")
-    }
-}

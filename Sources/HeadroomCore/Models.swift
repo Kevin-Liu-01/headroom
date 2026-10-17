@@ -35,35 +35,36 @@ public struct Proc: Codable, Equatable, Sendable {
     public var gb: Double { Double(footprint) / 1_073_741_824 }
 }
 
-public enum Advice: String, Codable, Sendable, Comparable {
-    case ok, hold, critical
+/// How full memory is: ok, warning or critical. The worst line crossed sets it.
+public enum Level: String, Codable, Sendable, Comparable, CaseIterable {
+    case ok, warning, critical
 
     var rank: Int {
         switch self {
         case .ok: 0
-        case .hold: 1
+        case .warning: 1
         case .critical: 2
         }
     }
 
-    public static func < (a: Advice, b: Advice) -> Bool { a.rank < b.rank }
+    public static func < (a: Level, b: Level) -> Bool { a.rank < b.rank }
 
-    /// What agents and people should do at this advice level.
+    /// One sentence on what the level means.
     public var guidance: String {
         switch self {
         case .ok:
-            "Memory is fine. Agents may start heavy jobs."
-        case .hold:
-            "Hold: agents start nothing new that is heavy. Wait with `headroom wait --gb N` or run the job later."
+            "Memory is fine."
+        case .warning:
+            "Memory is high. A heavy job started now could push it to critical."
         case .critical:
-            "Critical: pause heavy jobs and stop idle servers and browsers. If memory stays critical, restart the largest stuck session, or Claude or Codex, whichever holds more. All agent state is on disk, so a restart loses no conversation."
+            "Memory is critical. Close what you do not need, or restart the largest session, Claude or Codex; their conversations are saved on disk."
         }
     }
 
     public var title: String {
         switch self {
         case .ok: "OK"
-        case .hold: "Hold"
+        case .warning: "Warning"
         case .critical: "Critical"
         }
     }
@@ -269,7 +270,6 @@ public struct HeavyJob: Codable, Equatable, Sendable, Identifiable {
     public var stopped: Bool
     public var startTime: Double
     /// True for an app the person opened from /Applications, such as their own Google Chrome.
-    /// Pause heavy jobs leaves these out; each still has its own Pause button.
     public var personApp: Bool?
 
     public var id: Int32 { pid }
@@ -339,10 +339,10 @@ public struct Snapshot: Codable, Equatable, Sendable {
 
 public struct Reason: Codable, Equatable, Sendable {
     public var check: String
-    public var level: Advice
+    public var level: Level
     public var message: String
 
-    public init(check: String, level: Advice, message: String) {
+    public init(check: String, level: Level, message: String) {
         self.check = check
         self.level = level
         self.message = message
@@ -386,25 +386,25 @@ public struct Thresholds: Codable, Equatable, Sendable {
 
     public static let defaults = Thresholds()
 
-    /// The defaults for a new install on a Mac with `totalGB` of memory: hold at 47 percent of it and critical
+    /// The defaults for a new install on a Mac with `totalGB` of memory: warning at 47 percent of it and critical
     /// at 70 percent, rounded to 5 GB, for the agents, Claude and Codex lines. A 128 GB Mac gets 60 and 90 GB,
     /// and a 32 GB Mac gets 15 and 20 GB. The free memory lines stay at 30 and 15 percent.
     public static func scaled(toMemoryGB totalGB: Double) -> Thresholds {
         guard totalGB > 0 else { return Thresholds() }
         func round5(_ v: Double) -> Double { (v / 5).rounded() * 5 }
-        let hold = max(5, round5(totalGB * 0.47))
-        let critical = max(hold + 5, round5(totalGB * 0.70))
+        let warning = max(5, round5(totalGB * 0.47))
+        let critical = max(warning + 5, round5(totalGB * 0.70))
         var t = Thresholds()
-        t.agentsWarningGB = hold
+        t.agentsWarningGB = warning
         t.agentsCriticalGB = critical
-        t.claudeWarningGB = hold
+        t.claudeWarningGB = warning
         t.claudeCriticalGB = critical
-        t.codexWarningGB = hold
+        t.codexWarningGB = warning
         t.codexCriticalGB = critical
         return t
     }
 
-    /// Clamps values into sane ranges and keeps each critical line beyond its hold line.
+    /// Clamps values into sane ranges and keeps each critical line beyond its warning line.
     public func validated() -> Thresholds {
         var t = self
         t.agentsWarningGB = max(1, t.agentsWarningGB)
@@ -422,7 +422,7 @@ public struct Thresholds: Codable, Equatable, Sendable {
         return t
     }
 
-    /// The hold and critical lines of one agent app.
+    /// The warning and critical lines of one agent app.
     public func lines(_ app: AgentApp) -> (warning: Double, critical: Double) {
         switch app {
         case .claude: (claudeWarningGB, claudeCriticalGB)
@@ -431,127 +431,41 @@ public struct Thresholds: Codable, Equatable, Sendable {
     }
 }
 
-public enum RequestAction: String, Codable, Sendable, CaseIterable {
-    case pause, resume, quit, restartClaude = "restart-claude", restartCodex = "restart-codex"
-
-    public var label: String {
-        switch self {
-        case .pause: "Pause"
-        case .resume: "Resume"
-        case .quit: "Quit"
-        case .restartClaude: "Restart Claude"
-        case .restartCodex: "Restart Codex"
-        }
-    }
-
-    /// The app a restart action restarts. Nil for the actions that take a pid.
-    public var restarts: AgentApp? {
-        switch self {
-        case .restartClaude: .claude
-        case .restartCodex: .codex
-        default: nil
-        }
-    }
-
-    public static let names = "pause, resume, quit, restart-claude, restart-codex"
-}
-
-public enum RequestStatus: String, Codable, Sendable {
-    case pending, approved, denied, failed, expired
-}
-
-/// An agent's request that a person approve an action.
-public struct AgentRequest: Codable, Equatable, Sendable, Identifiable {
-    public var id: String
-    public var action: RequestAction
-    public var pid: Int32?
-    public var processName: String?
-    /// The target process's start time when the request was made, so a reused pid is never signalled.
-    public var processStart: Double?
-    public var reason: String
-    public var from: String?
-    public var createdAt: Date
-    public var status: RequestStatus
-    public var decidedAt: Date?
-    public var result: String?
-
-    public init(id: String, action: RequestAction, pid: Int32?, processName: String?, processStart: Double? = nil, reason: String,
-                from: String?, createdAt: Date, status: RequestStatus = .pending, decidedAt: Date? = nil, result: String? = nil) {
-        self.processStart = processStart
-        self.id = id
-        self.action = action
-        self.pid = pid
-        self.processName = processName
-        self.reason = reason
-        self.from = from
-        self.createdAt = createdAt
-        self.status = status
-        self.decidedAt = decidedAt
-        self.result = result
-    }
-}
-
-/// An agent's announcement of a heavy job.
-public struct AgentNote: Codable, Equatable, Sendable, Identifiable {
-    public var id: String
-    public var text: String
-    public var gb: Double?
-    public var label: String?
-    public var pid: Int32?
-    public var from: String?
-    public var time: Date
-
-    public init(id: String, text: String, gb: Double?, label: String?, pid: Int32?, from: String?, time: Date) {
-        self.id = id
-        self.text = text
-        self.gb = gb
-        self.label = label
-        self.pid = pid
-        self.from = from
-        self.time = time
-    }
-}
-
-/// The document written to state.json and served at GET /v1/status.
+/// The document written to state.json after every sample and printed by `headroom status --json`.
 public struct StatusDocument: Codable, Equatable, Sendable {
-    /// 2 since Codex: snapshot.codex, snapshot.agents, session.app and session.inApp (was inClaudeApp).
-    /// Each app's total counts that app's terminal sessions too; appGB is the part in the desktop app.
-    public var version: Int = 2
+    /// 3 since the viewer: `advice` became `level` (ok, warning, critical), and the agent requests and notes left.
+    public var version: Int = 3
     public var source: String
     public var updatedAt: Date
-    public var advice: Advice
+    public var level: Level
     public var guidance: String
     public var reasons: [Reason]
     public var snapshot: Snapshot
     public var thresholds: Thresholds
-    public var pendingRequests: [AgentRequest]
-    public var notes: [AgentNote]
 
-    public init(source: String, updatedAt: Date, advice: Advice, reasons: [Reason], snapshot: Snapshot,
-                thresholds: Thresholds, pendingRequests: [AgentRequest] = [], notes: [AgentNote] = []) {
+    public init(source: String, updatedAt: Date, level: Level, reasons: [Reason], snapshot: Snapshot, thresholds: Thresholds) {
         self.source = source
         self.updatedAt = updatedAt
-        self.advice = advice
-        self.guidance = advice.guidance
+        self.level = level
+        self.guidance = level.guidance
         self.reasons = reasons
         self.snapshot = snapshot
         self.thresholds = thresholds
-        self.pendingRequests = pendingRequests
-        self.notes = notes
     }
 }
 
+/// The answer of `headroom can-start`, a read-only check for scripts that start large jobs.
 public struct CanStart: Codable, Equatable, Sendable {
     public var ok: Bool
-    public var advice: Advice
+    public var level: Level
     public var reason: String
     public var freeGB: Double
     public var gb: Double
     public var label: String?
 
-    public init(ok: Bool, advice: Advice, reason: String, freeGB: Double, gb: Double, label: String?) {
+    public init(ok: Bool, level: Level, reason: String, freeGB: Double, gb: Double, label: String?) {
         self.ok = ok
-        self.advice = advice
+        self.level = level
         self.reason = reason
         self.freeGB = freeGB
         self.gb = gb

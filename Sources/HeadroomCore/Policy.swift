@@ -1,16 +1,15 @@
 import Foundation
 
-/// Turns a snapshot into advice. The advice never acts on its own; only the runaway guard (Guard.swift) stops
-/// processes without a click, and only processes whose memory spirals.
+/// Turns a snapshot into a level: ok, warning or critical. Headroom only shows the level; it never acts on it.
 public enum Policy {
     public struct Evaluation: Equatable, Sendable {
-        public var advice: Advice
+        public var level: Level
         public var reasons: [Reason]
         /// Processes at or above one process step, with the step reached.
         public var bigProcesses: [(proc: ProcSummary, step: Int)]
 
         public static func == (a: Evaluation, b: Evaluation) -> Bool {
-            a.advice == b.advice && a.reasons == b.reasons
+            a.level == b.level && a.reasons == b.reasons
                 && a.bigProcesses.map { "\($0.proc.pid):\($0.step)" } == b.bigProcesses.map { "\($0.proc.pid):\($0.step)" }
         }
     }
@@ -26,9 +25,9 @@ public enum Policy {
     }
 
     /// An app's total without its session processes: the app itself and the jobs, servers and browsers its
-    /// agents started. The hold and critical lines measure this. A session process grows with its conversation,
-    /// waiting does not shrink it and only a restart frees it, so counting it would hold every agent's work for
-    /// as long as one session stays bloated. Free memory and pressure still count everything.
+    /// agents started. The warning and critical lines measure this. A session process grows with its
+    /// conversation and only a restart frees it, so counting it would keep the level up for as long as one
+    /// session stays bloated. Free memory and pressure still count everything.
     public static func workGB(_ s: Snapshot, _ app: AgentApp) -> Double {
         max(0, Format.round2(s.total(app).totalGB - sessionProcessGB(s, app)))
     }
@@ -53,7 +52,7 @@ public enum Policy {
             if c.work >= c.critical {
                 reasons.append(Reason(check: c.check, level: .critical, message: "\(what) above the \(Format.gb(c.critical)) critical line."))
             } else if c.work >= c.warning {
-                reasons.append(Reason(check: c.check, level: .hold, message: "\(what) above the \(Format.gb(c.warning)) hold line."))
+                reasons.append(Reason(check: c.check, level: .warning, message: "\(what) above the \(Format.gb(c.warning)) warning line."))
             }
         }
 
@@ -62,18 +61,18 @@ public enum Policy {
             reasons.append(Reason(check: "free", level: .critical,
                                   message: "Free memory is \(s.system.freePercent) percent (\(Format.gb(s.system.freeGB))), below the \(Int(t.freeCriticalPercent)) percent critical line."))
         } else if free < t.freeWarningPercent {
-            reasons.append(Reason(check: "free", level: .hold,
-                                  message: "Free memory is \(s.system.freePercent) percent (\(Format.gb(s.system.freeGB))), below the \(Int(t.freeWarningPercent)) percent hold line."))
+            reasons.append(Reason(check: "free", level: .warning,
+                                  message: "Free memory is \(s.system.freePercent) percent (\(Format.gb(s.system.freeGB))), below the \(Int(t.freeWarningPercent)) percent warning line."))
         }
 
         switch s.system.pressure {
         case .critical:
             reasons.append(Reason(check: "pressure", level: .critical, message: "The system reports critical memory pressure."))
         case .warning:
-            // Above the free memory hold line, the warning is mostly the compressor holding idle memory, such as
-            // a bloated session's. The free memory lines and can-start still guard new work.
+            // Above the free memory warning line, the system's warning is mostly the compressor holding idle
+            // memory, such as a bloated session's, so it is a note.
             if free < t.freeWarningPercent {
-                reasons.append(Reason(check: "pressure", level: .hold, message: "The system reports memory pressure."))
+                reasons.append(Reason(check: "pressure", level: .warning, message: "The system reports memory pressure."))
             } else {
                 reasons.append(Reason(check: "pressure", level: .ok,
                                       message: "The system reports memory pressure, and \(s.system.freePercent) percent of memory is free."))
@@ -82,7 +81,7 @@ public enum Policy {
             break
         }
 
-        // A bloated or stuck session is the person's to judge; it does not hold other agents' work.
+        // A bloated or busy session is a note: it does not raise the level.
         for x in s.sessions {
             let own = x.processGB ?? 0
             let stuck = (x.busyPercent ?? 0) >= Policy.busySessionPercent
@@ -94,13 +93,13 @@ public enum Policy {
                                   message: "Session \(x.label) \(parts.joined(separator: " and ")). Its conversation is saved on disk, and a restart of the session frees its memory."))
         }
 
-        let advice = reasons.map(\.level).max() ?? .ok
+        let level = reasons.map(\.level).max() ?? .ok
         var big: [(ProcSummary, Int)] = []
         for p in s.largest {
             let step = Int(p.gb / t.processStepGB)
             if step >= 1 { big.append((p, step)) }
         }
-        return Evaluation(advice: advice, reasons: reasons, bigProcesses: big)
+        return Evaluation(level: level, reasons: reasons, bigProcesses: big)
     }
 
     /// "The agents use 58.9 GB (Claude 46.8 GB, Codex 12.1 GB)." for messages that name both apps.
@@ -112,26 +111,24 @@ public enum Policy {
         return "The agents use \(Format.gb(s.agents.totalGB)) (\(apps.joined(separator: ", ")))."
     }
 
-    public static func status(_ s: Snapshot, _ t: Thresholds, source: String,
-                              requests: [AgentRequest] = [], notes: [AgentNote] = []) -> StatusDocument {
+    public static func status(_ s: Snapshot, _ t: Thresholds, source: String) -> StatusDocument {
         let e = evaluate(s, t)
-        return StatusDocument(source: source, updatedAt: s.time, advice: e.advice, reasons: e.reasons, snapshot: s,
-                              thresholds: t, pendingRequests: requests, notes: notes)
+        return StatusDocument(source: source, updatedAt: s.time, level: e.level, reasons: e.reasons, snapshot: s, thresholds: t)
     }
 
-    /// Whether an agent may start a job that needs `gb` gigabytes now.
-    /// A job is fine when the advice is ok, the free memory after it stays above the hold line,
+    /// Whether a job that needs `gb` gigabytes fits now, for scripts that check before they start one.
+    /// A job fits when the level is ok, the free memory after it stays above the warning line,
     /// and the agents' work after it stays below the agents' critical line.
     public static func canStart(gb: Double, label: String?, status: StatusDocument) -> CanStart {
         let s = status.snapshot
         let t = status.thresholds
         let free = s.system.freeGB
         func answer(_ ok: Bool, _ reason: String) -> CanStart {
-            CanStart(ok: ok, advice: status.advice, reason: reason, freeGB: free, gb: gb, label: label)
+            CanStart(ok: ok, level: status.level, reason: reason, freeGB: free, gb: gb, label: label)
         }
-        if status.advice != .ok {
-            let why = status.reasons.first { $0.level == status.advice }?.message ?? ""
-            return answer(false, "Advice is \(status.advice.rawValue). \(why) \(status.advice.guidance)")
+        if status.level != .ok {
+            let why = status.reasons.first { $0.level == status.level }?.message ?? ""
+            return answer(false, "Memory is at \(status.level.rawValue). \(why)")
         }
         let total = max(s.system.totalGB, 1)
         let after = free - gb
@@ -140,7 +137,7 @@ public enum Policy {
             return answer(false, "A job of \(Format.gb(gb)) needs more than the \(Format.gb(free)) that is free.")
         }
         if afterPct < t.freeWarningPercent {
-            return answer(false, String(format: "A job of %@ would leave %@ free (%.0f percent), below the %.0f percent hold line.",
+            return answer(false, String(format: "A job of %@ would leave %@ free (%.0f percent), below the %.0f percent warning line.",
                                         Format.gb(gb), Format.gb(after), afterPct, t.freeWarningPercent))
         }
         let agentsAfter = agentsWorkGB(s) + gb
@@ -160,17 +157,17 @@ public struct AlertEngine: Sendable {
 
     public struct Alert: Equatable, Sendable {
         public var kind: Kind
-        public var advice: Advice
+        public var level: Level
         public var title: String
         public var body: String
     }
 
-    /// The advice the person was last told about.
-    public private(set) var announced: Advice = .ok
+    /// The level the person was last told about.
+    public private(set) var announced: Level = .ok
     public private(set) var lastAlertAt: Date?
     private var lowerStreak = 0
     private var processSteps: [String: Int] = [:]
-    /// Samples a lower advice must hold before Headroom announces the improvement.
+    /// Samples a lower level must hold before Headroom announces the improvement.
     public var settleSamples = 3
 
     public init() {}
@@ -179,13 +176,13 @@ public struct AlertEngine: Sendable {
         var out: [Alert] = []
         let t = status.thresholds
         let s = status.snapshot
-        let current = e.advice
+        let current = e.level
 
         if current > announced {
             announced = current
             lowerStreak = 0
             lastAlertAt = now
-            out.append(Alert(kind: .crossing, advice: current, title: title(current, s), body: body(status, e)))
+            out.append(Alert(kind: .crossing, level: current, title: title(current, s), body: body(status, e)))
         } else if current < announced {
             lowerStreak += 1
             if lowerStreak >= settleSamples {
@@ -194,18 +191,18 @@ public struct AlertEngine: Sendable {
                 lowerStreak = 0
                 if current == .ok {
                     lastAlertAt = nil
-                    out.append(Alert(kind: .recovery, advice: .ok, title: "Memory recovered",
-                                     body: "Advice is back to ok after \(was.rawValue). \(Policy.totalsSentence(s)) \(s.system.freePercent) percent of memory is free."))
+                    out.append(Alert(kind: .recovery, level: .ok, title: "Memory recovered",
+                                     body: "Memory is back to ok after \(was.rawValue). \(Policy.totalsSentence(s)) \(s.system.freePercent) percent of memory is free."))
                 } else {
                     lastAlertAt = now
-                    out.append(Alert(kind: .crossing, advice: current, title: title(current, s), body: body(status, e)))
+                    out.append(Alert(kind: .crossing, level: current, title: title(current, s), body: body(status, e)))
                 }
             }
         } else {
             lowerStreak = 0
             if current != .ok, let last = lastAlertAt, now.timeIntervalSince(last) >= t.repeatMinutes * 60 {
                 lastAlertAt = now
-                out.append(Alert(kind: .repeated, advice: current, title: title(current, s) + " (still)", body: body(status, e)))
+                out.append(Alert(kind: .repeated, level: current, title: title(current, s) + " (still)", body: body(status, e)))
             }
         }
 
@@ -227,17 +224,17 @@ public struct AlertEngine: Sendable {
                         : current.guidance
                     body = "Process \(p.pid)\(owner) passed \(passed). \(state)"
                 }
-                out.append(Alert(kind: .process, advice: current, title: "\(p.name) uses \(Format.gb(p.gb))", body: body))
+                out.append(Alert(kind: .process, level: current, title: "\(p.name) uses \(Format.gb(p.gb))", body: body))
             }
         }
         processSteps = processSteps.filter { seen.contains($0.key) }
         return out
     }
 
-    func title(_ a: Advice, _ s: Snapshot) -> String {
+    func title(_ a: Level, _ s: Snapshot) -> String {
         switch a {
         case .critical: "Critical: agents \(Format.gb(s.agents.totalGB)), \(s.system.freePercent)% free"
-        case .hold: "Hold: agents \(Format.gb(s.agents.totalGB)), \(s.system.freePercent)% free"
+        case .warning: "Warning: agents \(Format.gb(s.agents.totalGB)), \(s.system.freePercent)% free"
         case .ok: "Memory is fine"
         }
     }

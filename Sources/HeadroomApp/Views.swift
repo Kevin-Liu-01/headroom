@@ -1,13 +1,14 @@
 import HeadroomCore
 import SwiftUI
 
-// The window, drawn in SwiftUI so ImageRenderer draws it the same way the window does. Ruled rows: hair-soft
-// between rows and hair between sections, edge to edge. Figures share one right edge.
+// The menu bar window, drawn in SwiftUI so ImageRenderer draws it the same way the window does. Ruled rows:
+// hair-soft between rows and hair between sections, edge to edge. Figures share one right edge. The app window
+// shows the same view without its chart and footer as its Now column.
 
-func pressureAdvice(_ p: Pressure) -> Advice {
+func pressureLevel(_ p: Pressure) -> Level {
     switch p {
     case .normal: .ok
-    case .warning: .hold
+    case .warning: .warning
     case .critical: .critical
     }
 }
@@ -22,17 +23,6 @@ func relative(_ d: Date, now: Date = Date()) -> String {
     if s < 60 { return "\(s) s ago" }
     if s < 3600 { return "\(s / 60) min ago" }
     return "\(s / 3600) h ago"
-}
-
-/// Text with its backticked spans set in a monospaced face, for guidance that names a command.
-func codeText(_ s: String, font: Font) -> Text {
-    var out = Text(verbatim: "")
-    for (i, part) in s.components(separatedBy: "`").enumerated() where !part.isEmpty {
-        // A command never breaks across lines: its spaces are non-breaking.
-        let code = part.replacingOccurrences(of: " ", with: "\u{00A0}")
-        out = out + (i % 2 == 1 ? Text(verbatim: code).font(.system(size: 12, design: .monospaced)) : Text(verbatim: part).font(font))
-    }
-    return out
 }
 
 extension HeavyKind {
@@ -54,6 +44,8 @@ struct MainView: View {
     var actions: WindowActions
     /// True when rendered to PNG: no scroll view.
     var rendering = false
+    /// True in the app window's Now column: no chart, which the history shows larger, and no footer.
+    var inWindow = false
 
     static let width: CGFloat = 440
     static let pad: CGFloat = 16
@@ -78,6 +70,8 @@ struct MainView: View {
                 Rule()
                 if rendering {
                     content(st)
+                } else if inWindow {
+                    ScrollView { content(st) }.scrollIndicators(.automatic)
                 } else {
                     ScrollView { content(st) }
                         .scrollIndicators(.never)
@@ -86,9 +80,12 @@ struct MainView: View {
             } else {
                 Text("Taking the first sample.").ty(.body).foregroundStyle(Tok.ink2)
                     .padding(MainView.pad)
+                if inWindow { Spacer(minLength: 0) }
             }
-            Rule()
-            footer
+            if !inWindow {
+                Rule()
+                footer
+            }
         }
         .frame(width: MainView.width)
         .background(Tok.paper)
@@ -103,8 +100,8 @@ struct MainView: View {
                 Text(Format.gb(s.agents.totalGB)).ty(.display).foregroundStyle(Tok.ink)
                 Spacer()
                 HStack(spacing: 6) {
-                    Dot(advice: st.advice)
-                    Text(st.advice.title).ty(.label).foregroundStyle(Tok.ink)
+                    Dot(level: st.level)
+                    Text(st.level.title).ty(.label).foregroundStyle(Tok.ink)
                 }
             }
             HStack {
@@ -117,17 +114,17 @@ struct MainView: View {
             .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 6) {
-                if st.advice == .ok {
-                    statusLine(.checkCircle, Tok.green, Advice.ok.guidance)
+                if st.level == .ok {
+                    statusLine(.checkCircle, Tok.green, Level.ok.guidance)
                 } else {
                     ForEach(Array(st.reasons.filter { $0.level != .ok }.enumerated()), id: \.offset) { _, r in
                         statusLine(.exclamationTriangle, r.level.color, r.message)
                     }
-                    codeText(st.advice.guidance, font: Ty.small.font).foregroundStyle(Tok.ink2)
+                    Text(st.level.guidance).ty(.small).foregroundStyle(Tok.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, MainView.slot + MainView.gap)
                 }
-                // Notes do not change the advice: a bloated session to restart, or pressure with memory free.
+                // Notes do not change the level: a bloated session, or pressure with memory free.
                 ForEach(Array(st.reasons.filter { $0.level == .ok }.enumerated()), id: \.offset) { _, r in
                     statusLine(r.check == "session" ? .arrowPath : .exclamationTriangle, Tok.ink2, r.message)
                 }
@@ -141,7 +138,7 @@ struct MainView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Pressure").ty(.small).foregroundStyle(Tok.titanium)
                     HStack(spacing: 6) {
-                        Dot(advice: pressureAdvice(s.system.pressure), size: 6)
+                        Dot(level: pressureLevel(s.system.pressure), size: 6)
                         Text(s.system.pressure.rawValue.capitalized).ty(.body).foregroundStyle(Tok.ink)
                     }
                 }
@@ -178,22 +175,15 @@ struct MainView: View {
     func content(_ st: StatusDocument) -> some View {
         let s = st.snapshot
         VStack(alignment: .leading, spacing: 0) {
-            sectionHead(.presentationChartLine, "Memory", detail: "Agents over the last 60 minutes")
-            HistoryChart(points: model.history, hold: st.thresholds.agentsWarningGB, critical: st.thresholds.agentsCriticalGB,
-                         now: st.updatedAt, width: MainView.width - 2 * MainView.pad)
-                .padding(.horizontal, MainView.pad)
-                .padding(.bottom, 12)
-
-            if !model.pending.isEmpty {
+            if !inWindow {
+                sectionHead(.presentationChartLine, "Memory", detail: "Agents over the last 60 minutes")
+                HistoryChart(points: model.history, warning: st.thresholds.agentsWarningGB, critical: st.thresholds.agentsCriticalGB,
+                             now: st.updatedAt, width: MainView.width - 2 * MainView.pad)
+                    .padding(.horizontal, MainView.pad)
+                    .padding(.bottom, 12)
                 Rule()
-                sectionHead(.handRaised, "Requests", detail: "\(model.pending.count) waiting")
-                ForEach(model.pending) { r in
-                    Rule(color: Tok.hairSoft)
-                    requestRow(r)
-                }
             }
 
-            Rule()
             sectionHead(.userGroup, "Agents") {
                 HStack(spacing: MainView.gap) {
                     Text("10 min").frame(width: MainView.figure, alignment: .trailing)
@@ -209,17 +199,7 @@ struct MainView: View {
             }
 
             Rule()
-            sectionHead(.bolt, "Heavy jobs", detail: s.heavyJobs.isEmpty ? nil : "\(s.heavyJobs.count)") {
-                HStack(spacing: 6) {
-                    if s.heavyJobs.contains(where: \.stopped) {
-                        TextButton(title: "Resume paused", glyph: .play) { actions.resumePaused() }
-                    }
-                    if s.heavyJobs.contains(where: { !$0.stopped && $0.personApp != true }) {
-                        TextButton(title: "Pause heavy jobs", glyph: .pause,
-                                   help: "Pause the jobs that agents and tools started. Your own apps are left out.") { actions.pauseHeavyJobs() }
-                    }
-                }
-            }
+            sectionHead(.bolt, "Heavy jobs", detail: s.heavyJobs.isEmpty ? nil : "\(s.heavyJobs.count)")
             if s.heavyJobs.isEmpty {
                 Rule(color: Tok.hairSoft)
                 emptyRow("No browsers, model runs, encoders, builds, dev servers, test runs or containers above 256 MB.")
@@ -229,15 +209,6 @@ struct MainView: View {
                 jobRow(j)
             }
             moreToggle(s.heavyJobs.count, "job", all: $model.showAllJobs)
-
-            if !model.notes.isEmpty {
-                Rule()
-                sectionHead(.megaphone, "Notes", detail: "From agents in the last 30 minutes")
-                ForEach(Array(model.notes.reversed().prefix(5))) { n in
-                    Rule(color: Tok.hairSoft)
-                    noteRow(n)
-                }
-            }
 
             if !s.apps.isEmpty {
                 Rule()
@@ -383,25 +354,6 @@ struct MainView: View {
         .frame(width: MainView.figure, alignment: .trailing)
     }
 
-    /// The session watch for one session: its conversation, queue and subagents, and the rescue button.
-    func watchRow(_ w: WatchedSession) -> some View {
-        let chat = w.transcriptMB.map { "\(Int($0)) MB conversation, \(w.images ?? 0) images" } ?? "conversation not found"
-        let reply = w.lastReply.map { "last reply \(relative($0, now: model.fixedNow ?? Date()))" } ?? "no reply yet"
-        return HStack(alignment: .firstTextBaseline, spacing: MainView.gap) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(chat), \(reply)").ty(.small).foregroundStyle(Tok.ink2)
-                Text("\(w.unread.count) unread, \(w.subagentsActive) subagents active, \(w.subagentsWaiting.count) waiting on a tool, \(w.polls.count) polling shells")
-                    .ty(.small).foregroundStyle(Tok.titanium)
-            }
-            Spacer(minLength: MainView.gap)
-            if w.sessionId != nil {
-                TextButton(title: "Rescue", glyph: .arrowPath) { actions.rescue(w) }
-                    .help("Save this session's work, then stop its process to free its memory")
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
     func sessionRow(_ x: AgentSession) -> some View {
         let open = model.expanded.contains(x.pid)
         return VStack(alignment: .leading, spacing: 0) {
@@ -416,11 +368,6 @@ struct MainView: View {
                         Text(x.label).ty(.label).foregroundStyle(Tok.ink).lineLimit(1).truncationMode(.middle)
                         Text(Format.shortPath(x.cwd) + (x.inApp ? "" : ", from a terminal") + ", \(x.processCount) proc")
                             .ty(.small).foregroundStyle(Tok.titanium).lineLimit(1).truncationMode(.middle)
-                        if let w = model.watch[x.pid], !w.flags.isEmpty {
-                            Text(w.notes.joined(separator: ", "))
-                                .ty(.small).foregroundStyle(w.flags.contains(.failing) ? Tok.red : Tok.amber)
-                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                        }
                     }
                     Spacer(minLength: MainView.gap)
                     trendCell(x.trendGB)
@@ -434,7 +381,6 @@ struct MainView: View {
             .accessibilityLabel("\(x.app.name) session \(x.label), \(Format.gb(x.totalGB))")
             if open {
                 VStack(alignment: .leading, spacing: 0) {
-                    if let w = model.watch[x.pid] { watchRow(w) }
                     ForEach(x.top) { p in procRow(p) }
                 }
                 .padding(.leading, MainView.inset)
@@ -450,21 +396,9 @@ struct MainView: View {
             Text(verbatim: String(p.pid)).ty(.smallNumber).foregroundStyle(Tok.titanium)
             if p.stopped { Text("paused").ty(.small).foregroundStyle(Tok.titanium) }
             Spacer(minLength: MainView.gap)
-            processButtons(pid: p.pid, start: p.startTime, name: p.name, stopped: p.stopped, tree: false)
             gbText(p.gb)
         }
         .padding(.vertical, 2)
-    }
-
-    func processButtons(pid: Int32, start: Double, name: String, stopped: Bool, tree: Bool) -> some View {
-        HStack(spacing: 2) {
-            if stopped {
-                IconButton(glyph: .play, label: "Resume \(name)") { actions.resume(pid: pid, start: start, name: name, tree: tree) }
-            } else {
-                IconButton(glyph: .pause, label: "Pause \(name)") { actions.pause(pid: pid, start: start, name: name, tree: tree) }
-            }
-            IconButton(glyph: .xMark, label: "Quit \(name)") { actions.quit(pid: pid, start: start, name: name, tree: tree) }
-        }
     }
 
     func jobRow(_ j: HeavyJob) -> some View {
@@ -479,7 +413,7 @@ struct MainView: View {
                     } else if j.personApp == true {
                         Text("Opened by you").padding(.trailing, 6)
                     }
-                    Text(jobDetail(j))
+                    Text(j.stopped ? "\(j.kind.label), paused" : j.kind.label)
                 }
                 .font(Ty.small.font)
                 .foregroundStyle(Tok.titanium)
@@ -487,81 +421,28 @@ struct MainView: View {
             }
             .help("\(j.kind.label), pid \(j.pid), \(j.processCount) process\(j.processCount == 1 ? "" : "es")")
             Spacer(minLength: MainView.gap)
-            processButtons(pid: j.pid, start: j.startTime, name: j.name, stopped: j.stopped, tree: true)
             gbText(j.totalGB)
         }
         .padding(.horizontal, MainView.pad)
         .padding(.vertical, 8)
     }
 
-    func jobDetail(_ j: HeavyJob) -> String {
-        var parts = [j.kind.label]
-        if j.stopped { parts.append("paused") }
-        return parts.joined(separator: ", ")
-    }
-
-    func requestRow(_ r: AgentRequest) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(requestTitle(r)).ty(.label).foregroundStyle(Tok.ink)
-            Text(r.reason).ty(.body).foregroundStyle(Tok.ink2).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 6) {
-                Text((r.from.map { "From \(Format.label(forCwd: $0)), " } ?? "") + relative(r.createdAt, now: now))
-                    .ty(.small).foregroundStyle(Tok.titanium)
-                Spacer()
-                TextButton(title: "Deny", glyph: .xMark) { actions.deny(r) }
-                TextButton(title: "Approve", glyph: .check, primary: true) { actions.approve(r) }
-            }
-            .padding(.top, 4)
-        }
-        .padding(.leading, MainView.inset)
-        .padding(.trailing, MainView.pad)
-        .padding(.vertical, 10)
-    }
-
-    func requestTitle(_ r: AgentRequest) -> String {
-        if let app = r.action.restarts { return "Restart \(app.name)" }
-        return "\(r.action.label) \(r.processName ?? "process") (pid \(r.pid.map(String.init) ?? "?"))"
-    }
-
-    func noteRow(_ n: AgentNote) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(n.text).ty(.body).foregroundStyle(Tok.ink).fixedSize(horizontal: false, vertical: true)
-            Text(noteDetail(n)).ty(.small).foregroundStyle(Tok.titanium)
-        }
-        .padding(.leading, MainView.inset)
-        .padding(.trailing, MainView.pad)
-        .padding(.vertical, 8)
-    }
-
-    func noteDetail(_ n: AgentNote) -> String {
-        var parts: [String] = []
-        if let gb = n.gb { parts.append(Format.gb(gb)) }
-        if let from = n.from { parts.append("from \(Format.label(forCwd: from))") }
-        parts.append(relative(n.time, now: now))
-        return parts.joined(separator: ", ")
-    }
-
     // MARK: Footer
 
     var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let e = model.apiError {
-                Text(e).ty(.small).foregroundStyle(Tok.ink2).fixedSize(horizontal: false, vertical: true)
-            }
             if model.notificationsOff {
                 HStack(alignment: .center, spacing: 8) {
                     GlyphView(glyph: .bellSlash, size: MainView.slot, color: Tok.amber)
-                    Text("macOS does not deliver Headroom's notifications. Alerts open this window and go to the log.")
+                    Text("macOS does not deliver Headroom's notifications, so alerts arrive as plain banners.")
                         .ty(.small).foregroundStyle(Tok.ink2).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     TextButton(title: "Turn on") { actions.openNotificationSettings() }
                 }
             }
             HStack(spacing: 6) {
-                // A restart button shows only while its app runs.
-                ForEach(AgentApp.allCases.filter { model.status?.snapshot.total($0).pid != nil }, id: \.self) { app in
-                    TextButton(title: "Restart \(app.name)", glyph: .arrowPath) { actions.restart(app) }
-                }
+                TextButton(title: "Open Headroom", glyph: .presentationChartLine, primary: true,
+                           help: "Open the app window: memory now and its history") { actions.openMainWindow() }
                 TextButton(title: "Settings", glyph: .cog6Tooth) { actions.openSettings() }
                 Spacer(minLength: 0)
                 IconButton(glyph: .documentText, label: "Open the event log") { actions.openLog() }
