@@ -38,19 +38,25 @@ public enum Format {
         return path
     }
 
-    public static func iso(_ date: Date) -> String {
+    /// ISO8601DateFormatter is thread safe and costly to make, so each kind is made once.
+    nonisolated(unsafe) private static let isoFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.string(from: date)
+        return f
+    }()
+    nonisolated(unsafe) private static let isoWhole: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    public static func iso(_ date: Date) -> String {
+        isoFractional.string(from: date)
     }
 
-    /// Parses an ISO 8601 time with or without fractional seconds, as Claude Code writes them.
+    /// Parses an ISO 8601 time with or without fractional seconds.
     public static func parseISO(_ text: String) -> Date? {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f.date(from: text) { return d }
-        f.formatOptions = [.withInternetDateTime]
-        return f.date(from: text)
+        isoFractional.date(from: text) ?? isoWhole.date(from: text)
     }
 }
 

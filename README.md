@@ -85,7 +85,9 @@ Every sample folds into the minute it falls in. When a minute ends, Headroom wri
 - the worst level, and the minutes with samples, at warning and at critical (a minute counts once, at its worst level);
 - when the agents' total peaked, and the three largest sessions and processes at that moment.
 
-Minutes are kept for 90 days and hours for good. A day of minutes is about 0.5 MB and a year of hours about 3 MB. When the Mac sleeps or Headroom is not running, nothing is written and nothing is filled in, so gaps show as gaps. After a quit or a crash, the next start writes any hour it missed from the minutes on disk.
+Minutes are kept for 90 days and hours for good. A minute's line is about 600 bytes, so a day of minutes is under 1 MB and a year of hours about 5 MB. When the Mac sleeps or Headroom is not running, nothing is written and nothing is filled in, so gaps show as gaps. After a quit or a crash, the next start writes any hour it missed from the minutes on disk.
+
+The first start of version 2 also builds the record's first days from version 1's log: version 1 wrote a summary of every sample to `events.jsonl` and `events.1.jsonl`, with the totals, free memory, swap, the advice and the three largest sessions and processes. Those samples become minutes and hours before the record's first minute, with hold read as warning, once; `history/.imported-v1` marks it done.
 
 `history.jsonl` beside it holds every sample of the last 60 minutes for the menu bar window's chart.
 
@@ -173,8 +175,9 @@ Headroom's own memory and CPU use were measured for version 1 on 2026-10-12 on a
 | Physical footprint, menu bar window open | 37 MB in 5 of 7 runs; 86 MB and 102 MB in the other 2, at a load average near 280 | `proc_pid_rusage` in `--snapshot-window` runs on 2026-10-13 |
 | CPU, windows closed | 0.48 to 0.69 percent over 2 minutes | CPU time from `ps -o time` divided by wall time, in two runs |
 | One sample | 83 ms for 985 processes in one run, and 980 ms for 1,013 processes at a load average of 244 | `headroom doctor`, which samples without the app's cache |
+| Version 2, app window open | 54 MB after it settles | `footprint -p <pid>` on 2026-10-16, a minute after launch |
 
-The windows exist only while they are open. Closing one releases its views and, for the app window, the history it read, so a closed window costs no memory and no drawing per sample.
+When a window first appears, macOS charges the process for the window's graphics memory; on the 2026-10-16 Mac this reached 185 MB for about a second, as "Owned physical footprint (unmapped) (graphics)", and became reclaimable once the window was drawn. The windows exist only while they are open. Closing one releases its views and, for the app window, the history it read, so a closed window costs no memory and no drawing per sample.
 
 ## Privacy
 

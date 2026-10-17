@@ -174,10 +174,16 @@ func holderText(_ h: Holder?) -> String {
     return "\(h.app.map { "\($0.name) " } ?? "")\(h.name) \(Format.gb(h.gb))"
 }
 
+/// "3h20m", "45m".
+func short(minutes m: Int) -> String {
+    m >= 60 ? (m % 60 == 0 ? "\(m / 60)h" : "\(m / 60)h\(m % 60)m") : "\(m)m"
+}
+
+/// "crit 22m, warn 3h20m", or "ok".
 func levelText(_ r: Rollup) -> String {
     var parts: [String] = []
-    if r.criticalMinutes > 0 { parts.append("crit \(duration(minutes: r.criticalMinutes))") }
-    if r.warningMinutes > 0 { parts.append("warn \(duration(minutes: r.warningMinutes))") }
+    if r.criticalMinutes > 0 { parts.append("crit \(short(minutes: r.criticalMinutes))") }
+    if r.warningMinutes > 0 { parts.append("warn \(short(minutes: r.warningMinutes))") }
     return parts.isEmpty ? "ok" : parts.joined(separator: ", ")
 }
 
@@ -194,11 +200,11 @@ func printSummary(_ list: [Rollup], from: Double, to: Double) {
 func printRows(_ rows: [Rollup], format: String, label: String) {
     out("")
     out(pad(label, 14) + pad("agents", 10) + pad("avg", 10) + pad("claude", 10) + pad("codex", 10) + pad("in use", 10)
-        + pad("free", 6) + pad("level", 26) + "largest at the peak")
+        + pad("free", 6) + pad("level", 24) + "largest at the peak")
     for r in rows {
         out(pad(stamp(r.t, format), 14) + pad(Format.gb(r.agents.max), 10) + pad(Format.gb(r.agents.avg), 10)
             + pad(Format.gb(r.claude.max), 10) + pad(Format.gb(r.codex.max), 10) + pad(Format.gb(r.used.max), 10)
-            + pad("\(Int(r.free.min))%", 6) + pad(levelText(r), 26) + holderText(r.sessions.first))
+            + pad("\(Int(r.free.min))%", 6) + pad(levelText(r), 23) + " " + holderText(r.sessions.first))
     }
 }
 
