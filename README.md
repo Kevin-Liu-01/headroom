@@ -2,7 +2,7 @@
 
 ![The macOS Force Quit dialog after the system ran out of application memory, with Claude at 237.35 GB](docs/out-of-memory.png)
 
-Headroom is a macOS app that shows how much memory the Claude and Codex desktop apps, their agent sessions and every process those sessions start are using, and keeps a record of it. A menu bar item shows the agents' total at a glance. The app window shows memory now beside its history: a chart from the last hour to the whole record, the peaks, the time spent at warning and critical, and the days, warnings and sessions behind them. Headroom takes no messages from agents, and the one process it ever stops is a session it recommends restarting: a Claude Code session whose own process has grown, once restarting it loses nothing, or when you press its Restart button (see [Restarting a session](#restarting-a-session)).
+Headroom is a macOS app that shows how much memory the Claude and Codex desktop apps, their agent sessions and every process those sessions start are using, and keeps a record of it. A menu bar item shows the agents' total at a glance, and its window holds everything: memory now, the history (a chart from the last hour to the whole record, the peaks, the time spent at warning and critical, and the days, warnings and sessions behind them) and the session restarts. An app window shows the same with the history at full width, and opens only when you ask for it. Headroom takes no messages from agents, and the one process it ever stops is a session it recommends restarting: a Claude Code session whose own process has grown, once restarting it loses nothing, or when you press its Restart button (see [Restarting a session](#restarting-a-session)).
 
 ## Screenshots
 
@@ -74,7 +74,7 @@ The agents' lines measure the agents' work: everything in an app's total except 
 
 The settings window changes every line and the sampling. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI uses the same lines as the app.
 
-Headroom posts a notification each time the level gets worse, naming the largest sessions and processes. While the level stays at warning or critical, the notification repeats every 5 minutes. When the level returns to ok for three samples in a row, Headroom posts a recovery note. It also posts a notification each time a single process crosses another 16 GB step. Clicking a notification opens the app window. When macOS does not let Headroom post its own notifications, Headroom posts the same text as a banner through osascript.
+Headroom posts a notification each time the level gets worse, naming the largest sessions and processes. While the level stays at warning or critical, the notification repeats every 5 minutes. When the level returns to ok for three samples in a row, Headroom posts a recovery note. It also posts a notification each time a single process crosses another 16 GB step. Clicking a notification opens the menu bar window. When macOS does not let Headroom post its own notifications, Headroom posts the same text as a banner through osascript.
 
 ## Restarting a session
 
@@ -107,7 +107,7 @@ The first start of version 2 also builds the record's first days from version 1'
 
 ## The app window
 
-Open it from the menu bar window's Open Headroom button, by opening Headroom again from Finder or Spotlight, or by clicking a notification. Headroom also opens it when the person starts the app, but not when it starts at login. While the window is open, Headroom has a Dock icon and menus; when it closes, Headroom goes back to the menu bar.
+It opens only from the menu bar window's Open Headroom button. Starting Headroom, opening it again from Finder or Spotlight, and clicking a notification show the menu bar window instead, and at login only the menu bar item appears. While the app window is open, Headroom has a Dock icon and menus; when it closes, Headroom goes back to the menu bar.
 
 The left column is memory now, in the menu bar window's rows: the agents' total and level with its reasons, free memory, swap, compressed memory and pressure, then Claude and Codex with their sessions, the heavy jobs and other apps.
 
@@ -123,7 +123,7 @@ Warnings need minutes, so they reach back 90 days at most. The window reloads it
 
 ## The menu bar
 
-The menu bar item shows a small gauge, the agents' total in GB and a dot. The gauge's column fills toward its top line as the agents' total nears the critical line, so the empty part under the line is the headroom, and a tick on its left marks the warning line. The dot is green for ok, amber for warning and red for critical. A click opens the menu bar window under the item: the same head and lists as the app window's left column, a chart of the agents over the last 60 minutes, and a footer with Open Headroom, Settings, the event log, Quit Headroom and Launch at login. Each list shows six rows until Show more is clicked. A click outside the window or the Escape key closes it. Launch at login uses `SMAppService` and is off until it is turned on.
+The menu bar item shows a small gauge, the agents' total in GB and a dot. The gauge's column fills toward its top line as the agents' total nears the critical line, so the empty part under the line is the headroom, and a tick on its left marks the warning line. The dot is green for ok, amber for warning and red for critical. A click opens the menu bar window under the item. It holds everything the app window does: the head with the level, its reasons and each session's Restart button; the history with the same ranges, measures, chart, figures and Days, Warnings and Sessions lists, sized to the window; Claude and Codex with their sessions, the heavy jobs and other apps; and a footer with Open Headroom, Settings, the event log, Quit Headroom and Launch at login. The session lists show six rows and the history's lists five until Show more is clicked, and the window scrolls when it is taller than the screen. A click outside the window or the Escape key closes it. Launch at login uses `SMAppService` and is off until it is turned on.
 
 ## Command line
 
@@ -162,7 +162,7 @@ In `state.json`, version 3 replaces `advice` (ok, hold, critical) with `level` (
 
 ## Install
 
-Headroom needs macOS 14 or later and Swift 6. The build script builds in release, assembles `Headroom.app` with its icon, signs it ad hoc, installs it to `~/Applications`, installs the CLI to `~/.local/bin/headroom` and launches the app, which opens its window.
+Headroom needs macOS 14 or later and Swift 6. The build script builds in release, assembles `Headroom.app` with its icon, signs it ad hoc, installs it to `~/Applications`, installs the CLI to `~/.local/bin/headroom` and launches the app, which shows its menu bar window.
 
 ```sh
 scripts/build-app.sh

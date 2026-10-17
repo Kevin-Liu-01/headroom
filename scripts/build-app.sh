@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds Headroom in release, assembles and ad hoc signs Headroom.app, installs it to
-# ~/Applications and the CLI to ~/.local/bin/headroom, and launches the app, which opens its window.
+# ~/Applications and the CLI to ~/.local/bin/headroom, and launches the app, which shows its menu bar window.
 # Pass --no-launch to skip the launch and --no-install to only assemble build/Headroom.app.
 set -euo pipefail
 

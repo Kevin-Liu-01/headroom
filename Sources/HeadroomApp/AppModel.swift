@@ -139,6 +139,8 @@ final class HistoryModel: ObservableObject {
     @Published var tab: HistoryTab = .days
     @Published var data: HistoryData?
     @Published var loading = false
+    /// The menu bar window shows the first rows of each list until the person asks for all of them.
+    @Published var showAllRows = false
     /// Set by the demo render, which never reads files.
     var fixed = false
 }

@@ -74,8 +74,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
         model.launchAtLogin = SMAppService.mainApp.status == .enabled
         sampleNow()
         schedule(interval)
-        // Opened by the person, the app shows its window; started at login or with --background, only the menu bar item.
-        if snapshotPath == nil, !background, !launchedAtLogin() { openMainWindow() }
+        // Opened by the person, Headroom shows the menu bar window; started at login or with --background, only the
+        // menu bar item. The app window opens only from Open Headroom.
+        if snapshotPath == nil, !background, !launchedAtLogin() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.showPanel() }
+        }
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -83,9 +86,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
         if snapshotPath == nil { Store.appendEvent("stop", ["pid": Int(getpid())], paths: paths) }
     }
 
-    /// Opening Headroom again from Finder, Spotlight or the Dock shows the app window.
+    /// Opening Headroom again from Finder or Spotlight shows the menu bar window, or brings the app window
+    /// forward when it is already open.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        openMainWindow()
+        if let w = mainWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            w.makeKeyAndOrderFront(nil)
+        } else {
+            showPanel()
+        }
         return false
     }
 
@@ -167,7 +176,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
 
     func makePanel() -> (MenuPanel, NSHostingController<PanelRoot>) {
         if let panel, let host { return (panel, host) }
-        let host = NSHostingController(rootView: PanelRoot(model: model, actions: self))
+        let host = NSHostingController(rootView: PanelRoot(model: model, history: historyModel, actions: self))
         host.sizingOptions = [.preferredContentSize]
         let panel = MenuPanel(content: host)
         panel.onCancel = { [weak self] in self?.closePanel() }
@@ -235,6 +244,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
 
     func closePanel() {
         panel?.orderOut(nil)
+        // What the history read goes with the last window that shows it.
+        if mainWindow == nil, snapshotPath == nil { historyModel.data = nil }
         // Released on the next turn of the run loop, because a click inside the window may have closed it.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel?.isVisible != true else { return }
@@ -253,6 +264,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
     func showPanel() {
         model.launchAtLogin = SMAppService.mainApp.status == .enabled
         refreshNotificationState()
+        reloadHistory()
         openPanel(focus: true)
     }
 
@@ -293,7 +305,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
             guard let self else { return }
             self.mainWindow?.contentViewController = nil
             self.mainWindow = nil
-            self.historyModel.data = nil
+            if self.panel?.isVisible != true { self.historyModel.data = nil }
             NSApp.setActivationPolicy(.accessory)
         }
     }
@@ -393,7 +405,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        DispatchQueue.main.async { [weak self] in self?.openMainWindow() }
+        DispatchQueue.main.async { [weak self] in self?.showPanel() }
         completionHandler()
     }
 
@@ -477,7 +489,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
         for alert in engine.step(doc, evaluation: e, now: doc.updatedAt) {
             notify(alert)
         }
-        if minuteClosed, mainWindow?.isVisible == true { reloadHistory() }
+        if minuteClosed, mainWindow?.isVisible == true || panel?.isVisible == true { reloadHistory() }
         // A recommended restart that loses nothing happens on its own, one at a time.
         if thresholds.restartIdleSessions, model.restarting.isEmpty {
             let recommended = Set(SessionRestart.candidates(doc.snapshot, thresholds).map(\.pid))
@@ -621,10 +633,11 @@ final class MenuPanel: NSPanel {
 /// The live window's content: the main view with a hair edge around it.
 struct PanelRoot: View {
     @ObservedObject var model: AppModel
+    var history: HistoryModel
     var actions: WindowActions
 
     var body: some View {
-        MainView(model: model, actions: actions)
+        MainView(model: model, history: history, actions: actions)
             .overlay(Rectangle().strokeBorder(Tok.hair, lineWidth: 1))
     }
 }

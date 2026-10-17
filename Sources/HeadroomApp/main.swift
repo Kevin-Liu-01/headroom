@@ -56,7 +56,7 @@ func renderScreenshots(to dir: String, demo: Bool = false, checksDir: String? = 
     }
     let variants: [(String, ColorScheme, NSAppearance.Name)] = [("light", .light, .aqua), ("dark", .dark, .darkAqua)]
     for (name, scheme, appearance) in variants {
-        let main = MainView(model: model, actions: actions, rendering: true).environment(\.colorScheme, scheme)
+        let main = MainView(model: model, history: history, actions: actions, rendering: true).environment(\.colorScheme, scheme)
         let settings = SettingsView(t: thresholds, save: { _ in }, close: {}, rendering: true).environment(\.colorScheme, scheme)
         history.tab = .days
         // The app window at its default size; the Now column's rows run on below the fold, as in a scroll view.

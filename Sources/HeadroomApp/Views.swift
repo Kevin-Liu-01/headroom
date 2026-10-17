@@ -2,8 +2,9 @@ import HeadroomCore
 import SwiftUI
 
 // The menu bar window, drawn in SwiftUI so ImageRenderer draws it the same way the window does. Ruled rows:
-// hair-soft between rows and hair between sections, edge to edge. Figures share one right edge. The app window
-// shows the same view without its chart and footer as its Now column.
+// hair-soft between rows and hair between sections, edge to edge. Figures share one right edge. It holds
+// everything: memory now, the history and the session restarts. The app window shows the same view without its
+// history and footer as its Now column, beside the history at full width.
 
 func pressureLevel(_ p: Pressure) -> Level {
     switch p {
@@ -41,10 +42,12 @@ extension HeavyKind {
 
 struct MainView: View {
     @ObservedObject var model: AppModel
+    /// The history the menu bar window shows under the head. Nil in the app window, which shows it beside.
+    var history: HistoryModel?
     var actions: WindowActions
     /// True when rendered to PNG: no scroll view.
     var rendering = false
-    /// True in the app window's Now column: no chart, which the history shows larger, and no footer.
+    /// True in the app window's Now column: no history, which the window shows larger, and no footer.
     var inWindow = false
 
     static let width: CGFloat = 440
@@ -196,12 +199,9 @@ struct MainView: View {
     func content(_ st: StatusDocument) -> some View {
         let s = st.snapshot
         VStack(alignment: .leading, spacing: 0) {
-            if !inWindow {
-                sectionHead(.presentationChartLine, "Memory", detail: "Agents over the last 60 minutes")
-                HistoryChart(points: model.history, warning: st.thresholds.agentsWarningGB, critical: st.thresholds.agentsCriticalGB,
-                             now: st.updatedAt, width: MainView.width - 2 * MainView.pad)
-                    .padding(.horizontal, MainView.pad)
-                    .padding(.bottom, 12)
+            if !inWindow, let history {
+                HistoryPane(history: history, thresholds: st.thresholds, actions: actions, rendering: rendering,
+                            width: MainView.width, compact: true)
                 Rule()
             }
 

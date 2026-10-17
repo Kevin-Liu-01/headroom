@@ -205,7 +205,7 @@ struct RangeChart: View {
     }
 }
 
-/// The time axis: ticks on whole local minutes, hours, days or months, about one every 90 points.
+/// The time axis: ticks on whole local minutes, hours, days or months, about one every 80 points.
 enum TimeTicks {
     struct Tick {
         var t: Double
@@ -215,8 +215,8 @@ enum TimeTicks {
     static func make(from: Double, to: Double, width: CGFloat) -> [Tick] {
         let span = to - from
         guard span > 0, width > 0 else { return [] }
-        let want = span / Double(max(2, Int(width / 90)))
-        let steps: [Double] = [300, 600, 900, 1800, 3600, 7200, 10_800, 21_600, 43_200, 86_400, 172_800, 604_800, 1_209_600]
+        let want = span / Double(max(3, Int(width / 80)))
+        let steps: [Double] = [300, 600, 900, 1800, 3600, 7200, 10_800, 21_600, 43_200, 86_400, 172_800, 259_200, 604_800, 1_209_600]
         let cal = Calendar.current
         let f = DateFormatter()
         var out: [Tick] = []
