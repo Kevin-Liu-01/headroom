@@ -74,7 +74,7 @@ The agents' lines measure the agents' work: everything in an app's total except 
 
 The settings window changes every line and the sampling. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI uses the same lines as the app.
 
-Headroom posts a notification each time the level gets worse, naming the largest sessions and processes. While the level stays at warning or critical, the notification repeats every 5 minutes. When the level returns to ok for three samples in a row, Headroom posts a recovery note. It also posts a notification each time a single process crosses another 16 GB step. Clicking a notification opens the menu bar window. When macOS does not let Headroom post its own notifications, Headroom posts the same text as a banner through osascript.
+Headroom posts a notification each time the level gets worse, naming the largest sessions and processes. While the level stays at warning or critical, the notification repeats every 5 minutes. When the level returns to ok for three samples in a row, Headroom posts a recovery note. While the level is at warning or critical, it also posts a notification each time a single process crosses another 16 GB step; with memory to spare, a big process is nothing to act on, so it stays quiet. Clicking a notification opens the menu bar window. When macOS does not let Headroom post its own notifications, Headroom posts the same text as a banner through osascript.
 
 ## Restarting a session
 
@@ -143,14 +143,14 @@ headroom doctor                 # the app's state file, the record's files and a
 
 `history`, `days` and `episodes` take `--json` and print the rollups.
 
-Two commands are for scripts that start large jobs and want to check first. They read the same levels and change nothing.
+Two commands remain for scripts that ask before they start a large job. Nothing in Headroom stops a job from starting (Kevin, 2026-10-21: "never stop agents from starting new stuff"), so both always answer yes; they only describe the room left.
 
 ```sh
-headroom can-start --gb 8       # exit 0 when an 8 GB job fits now, 1 when not
-headroom wait --gb 8 --timeout 20 && ffmpeg -i in.mov out.mp4
+headroom can-start --gb 8       # prints "yes:" and how tight memory would be; always exits 0
+headroom wait --gb 8 && ffmpeg -i in.mov out.mp4   # returns at once
 ```
 
-A job fits when the level is ok, the free memory after it stays above the warning line, and the agents' work after it stays below the agents' critical line. `wait` checks every 10 seconds and exits with code 75 when the timeout passes.
+The note says when memory is already at warning or critical, when a job would leave free memory under the warning line or push the agents' work past the critical line, or when it needs more than is free.
 
 ## Upgrading from 1.x
 

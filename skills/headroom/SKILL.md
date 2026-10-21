@@ -1,6 +1,6 @@
 ---
 name: headroom
-description: Headroom is the person's own macOS app for seeing this Mac's memory levels and their history. Agents only read it. Use when you want to check whether a large job (a build, a browser test run, a model run, a long encode) fits in memory before starting it, or when older instructions tell you to send Headroom a note, a request, a hook or a guard command, which no longer exist.
+description: Headroom is the person's own macOS app for seeing this Mac's memory levels and their history. Agents only read it. Use when you want to see how much memory a large job would leave, or when older instructions tell you to send Headroom a note, a request, a hook or a guard command, which no longer exist.
 ---
 
 # Headroom
@@ -12,7 +12,7 @@ Headroom is the person's memory viewer and history tracker: a menu bar item and 
 Read, never write:
 
 - `headroom status` prints the level (ok, warning or critical), the agents' totals, free memory, sessions and heavy jobs. `--json` prints the same document as `state.json`.
-- `headroom can-start --gb N` exits 0 when a job of N GB fits now and 1 when it does not. `headroom wait --gb N --timeout M` waits until it fits and exits 75 after M minutes. Use one before a job that needs several GB, and if it says no, wait or run the job later.
+- `headroom can-start --gb N` prints how much room a job of N GB would leave and always exits 0; `headroom wait` returns at once. Nothing stops agents from starting work (Kevin, 2026-10-21: "never stop agents from starting new stuff"): never hold off, queue or wait because of memory.
 - `headroom history`, `headroom days` and `headroom episodes` print the record, if the person asks what happened to memory.
 
 ## What no longer exists

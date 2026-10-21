@@ -117,35 +117,35 @@ public enum Policy {
         return StatusDocument(source: source, updatedAt: s.time, level: e.level, reasons: e.reasons, snapshot: s, thresholds: t)
     }
 
-    /// Whether a job that needs `gb` gigabytes fits now, for scripts that check before they start one.
-    /// A job fits when the level is ok, the free memory after it stays above the warning line,
-    /// and the agents' work after it stays below the agents' critical line.
+    /// The room a job of `gb` gigabytes would leave, for scripts that ask before they start one. The answer is
+    /// always yes: nothing in Headroom stops agents from starting work (Kevin, 2026-10-21: "never stop agents from
+    /// starting new stuff"). The reason says how tight memory would be, for the script's log.
     public static func canStart(gb: Double, label: String?, status: StatusDocument) -> CanStart {
         let s = status.snapshot
         let t = status.thresholds
         let free = s.system.freeGB
-        func answer(_ ok: Bool, _ reason: String) -> CanStart {
-            CanStart(ok: ok, level: status.level, reason: reason, freeGB: free, gb: gb, label: label)
+        func note(_ reason: String) -> CanStart {
+            CanStart(ok: true, level: status.level, reason: reason, freeGB: free, gb: gb, label: label)
         }
         if status.level != .ok {
             let why = status.reasons.first { $0.level == status.level }?.message ?? ""
-            return answer(false, "Memory is at \(status.level.rawValue). \(why)")
+            return note("Memory is at \(status.level.rawValue). \(why)")
         }
         let total = max(s.system.totalGB, 1)
         let after = free - gb
         let afterPct = after / total * 100
         if after <= 0 {
-            return answer(false, "A job of \(Format.gb(gb)) needs more than the \(Format.gb(free)) that is free.")
+            return note("A job of \(Format.gb(gb)) needs more than the \(Format.gb(free)) that is free.")
         }
         if afterPct < t.freeWarningPercent {
-            return answer(false, String(format: "A job of %@ would leave %@ free (%.0f percent), below the %.0f percent warning line.",
+            return note(String(format: "A job of %@ would leave %@ free (%.0f percent), below the %.0f percent warning line.",
                                         Format.gb(gb), Format.gb(after), afterPct, t.freeWarningPercent))
         }
         let agentsAfter = agentsWorkGB(s) + gb
         if agentsAfter >= t.agentsCriticalGB {
-            return answer(false, "A job of \(Format.gb(gb)) would bring the agents' work to \(Format.gb(agentsAfter)), above the \(Format.gb(t.agentsCriticalGB)) critical line.")
+            return note("A job of \(Format.gb(gb)) would bring the agents' work to \(Format.gb(agentsAfter)), above the \(Format.gb(t.agentsCriticalGB)) critical line.")
         }
-        return answer(true, String(format: "%@ free. A job of %@ leaves %@ (%.0f percent).",
+        return note(String(format: "%@ free. A job of %@ leaves %@ (%.0f percent).",
                                    Format.gb(free), Format.gb(gb), Format.gb(after), afterPct))
     }
 }
@@ -207,9 +207,10 @@ public struct AlertEngine: Sendable {
             }
         }
 
-        // Process steps: one alert each time a process crosses another step.
+        // Process steps: one alert each time a process crosses another step, only while memory is raised. A big
+        // process with plenty free is nothing to act on.
         var seen = Set<String>()
-        for (p, step) in e.bigProcesses {
+        for (p, step) in e.bigProcesses where current != .ok {
             let key = "\(p.pid):\(Int(p.startTime))"
             seen.insert(key)
             if step > (processSteps[key] ?? 0) {

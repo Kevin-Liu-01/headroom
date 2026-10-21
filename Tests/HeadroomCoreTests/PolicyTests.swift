@@ -77,14 +77,16 @@ struct PolicyTests {
         let e = Policy.evaluate(snap, t)
         #expect(e.level == .warning)
         #expect(e.reasons[0].message.contains("48.0 GB of it outside the sessions' own processes"))
-        #expect(!Policy.canStart(gb: 1, label: nil, status: Policy.status(snap, t, source: "test")).ok)
+        let r = Policy.canStart(gb: 1, label: nil, status: Policy.status(snap, t, source: "test"))
+        #expect(r.ok, "can-start never says no")
+        #expect(r.reason.contains("Memory is at warning"))
     }
 
     @Test func canStartCountsWorkNotSessionHeaps() {
         let snap = Fixture.snapshot(claudeGB: 60, freePercent: 70, sessions: [Self.session(1, "a", total: 60, own: 30)])
         // Work is 30 GB: a 35 GB job reaches the 70 GB agents line only when the 30 GB heap is not counted twice.
-        #expect(Policy.canStart(gb: 35, label: nil, status: Policy.status(snap, t, source: "test")).ok)
-        #expect(!Policy.canStart(gb: 41, label: nil, status: Policy.status(snap, t, source: "test")).ok)
+        #expect(!Policy.canStart(gb: 35, label: nil, status: Policy.status(snap, t, source: "test")).reason.contains("critical line"))
+        #expect(Policy.canStart(gb: 41, label: nil, status: Policy.status(snap, t, source: "test")).reason.contains("critical line"))
     }
 
     @Test func busySmallSessionGetsANoteAndQuietOnesDoNot() {
@@ -98,7 +100,7 @@ struct PolicyTests {
     @Test func aSessionProcessAlertSaysItIsTheSession() {
         var engine = AlertEngine()
         let big = [ProcSummary(pid: 5398, name: "claude", gb: 49, session: "gt-cloud", startTime: 5)]
-        let snap = Fixture.snapshot(claudeGB: 60, largest: big, sessions: [Self.session(5398, "gt-cloud", total: 60, own: 49)])
+        let snap = Fixture.snapshot(claudeGB: 60, freePercent: 25, largest: big, sessions: [Self.session(5398, "gt-cloud", total: 60, own: 49)])
         let doc = Policy.status(snap, t, source: "test")
         let alerts = engine.step(doc, evaluation: Policy.evaluate(snap, t), now: Date())
         let p = alerts.first { $0.kind == .process }
@@ -174,29 +176,29 @@ struct PolicyTests {
         #expect(r.label == "encode")
     }
 
-    @Test func cannotStartAtWarning() {
+    @Test func startsAtWarningAndSaysSo() {
         let r = Policy.canStart(gb: 1, label: nil, status: Fixture.status(claudeGB: 45))
-        #expect(!r.ok)
+        #expect(r.ok)
         #expect(r.level == .warning)
         #expect(r.reason.contains("warning"))
     }
 
-    @Test func cannotStartWhenTheJobWouldCrossTheFreeLine() {
+    @Test func aJobThatWouldCrossTheFreeLineStartsAndSaysSo() {
         // 40 percent free is 51.2 GB. A 20 GB job leaves 31.2 GB, which is 24 percent.
         let r = Policy.canStart(gb: 20, label: nil, status: Fixture.status(claudeGB: 10, freePercent: 40))
-        #expect(!r.ok)
+        #expect(r.ok)
         #expect(r.reason.contains("warning line"))
     }
 
     @Test func aJobLargerThanFreeMemorySaysSo() {
         let r = Policy.canStart(gb: 200, label: nil, status: Fixture.status(claudeGB: 10, freePercent: 80))
-        #expect(!r.ok)
+        #expect(r.ok, "even then, nothing stops the job")
         #expect(r.reason == "A job of 200 GB needs more than the 102 GB that is free.")
     }
 
-    @Test func cannotStartWhenTheJobWouldPushClaudeOverCritical() {
+    @Test func aJobPastTheCriticalLineStartsAndSaysSo() {
         let r = Policy.canStart(gb: 35, label: nil, status: Fixture.status(claudeGB: 39, freePercent: 95))
-        #expect(!r.ok)
+        #expect(r.ok)
         #expect(r.reason.contains("critical line"))
     }
 
@@ -243,16 +245,18 @@ struct PolicyTests {
         #expect(count == 1)
     }
 
-    @Test func processAlertOncePerStep() {
+    @Test func processAlertOncePerStepWhileMemoryIsRaised() {
         var engine = AlertEngine()
         let p16 = [ProcSummary(pid: 7, name: "node", gb: 17, session: "web-app", startTime: 5)]
         let p20 = [ProcSummary(pid: 7, name: "node", gb: 20, session: "web-app", startTime: 5)]
         let p33 = [ProcSummary(pid: 7, name: "node", gb: 33, session: "web-app", startTime: 5)]
-        let first = run(&engine, Fixture.status(claudeGB: 1, largest: p16), at: 0)
-        #expect(first.map(\.kind) == [.process])
-        #expect(first[0].body.contains("web-app"))
-        #expect(run(&engine, Fixture.status(claudeGB: 1, largest: p20), at: 20).isEmpty)
-        #expect(run(&engine, Fixture.status(claudeGB: 1, largest: p33), at: 40).map(\.kind) == [.process])
+        // With plenty free, a big process is nothing to act on.
+        #expect(run(&engine, Fixture.status(claudeGB: 1, largest: p16), at: 0).isEmpty)
+        let first = run(&engine, Fixture.status(claudeGB: 1, freePercent: 25, largest: p16), at: 20)
+        #expect(first.map(\.kind) == [.crossing, .process])
+        #expect(first[1].body.contains("web-app"))
+        #expect(run(&engine, Fixture.status(claudeGB: 1, freePercent: 25, largest: p20), at: 40).isEmpty)
+        #expect(run(&engine, Fixture.status(claudeGB: 1, freePercent: 25, largest: p33), at: 60).map(\.kind) == [.process])
     }
 
     @Test func alertBodyNamesSessionsAndProcesses() {

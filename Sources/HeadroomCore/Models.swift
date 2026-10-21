@@ -55,7 +55,7 @@ public enum Level: String, Codable, Sendable, Comparable, CaseIterable {
         case .ok:
             "Memory is fine."
         case .warning:
-            "Memory is high. A heavy job started now could push it to critical."
+            "Memory is high."
         case .critical:
             "Memory is critical. Close what you do not need, or restart the largest session, Claude or Codex; their conversations are saved on disk."
         }

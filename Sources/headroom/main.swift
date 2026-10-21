@@ -20,8 +20,9 @@ Usage:
                                            sessions that held the most. RANGE defaults to 7d.
   headroom events [--follow] [-n N]        Print the app's log: starts, alerts and settings.
   headroom doctor                          Check the app, its files and a direct sample.
-  headroom can-start --gb N [--label X]    For scripts: exit 0 when a job of N GB fits now, 1 when not.
-  headroom wait --gb N [--timeout M]       For scripts: wait until a job of N GB fits. Exit 75 after M minutes (default 30).
+  headroom can-start --gb N [--label X]    For scripts: print the room a job of N GB would leave. Always exits 0;
+                                           nothing in Headroom stops a job from starting.
+  headroom wait --gb N [--timeout M]       Kept for old scripts: returns at once with exit 0.
 
 Environment:
   HEADROOM_HOME                            Use another folder than ~/Library/Application Support/Headroom.

@@ -296,7 +296,7 @@ struct CodexPolicyTests {
     @Test func canStartChecksTheAgentsTotal() {
         let doc = Policy.status(snap(claude: 20, codex: 15, free: 90), .defaults, source: "test")
         let r = Policy.canStart(gb: 40, label: nil, status: doc)
-        #expect(!r.ok)
+        #expect(r.ok)
         #expect(r.reason.contains("would bring the agents' work to 75.0 GB"))
     }
 
