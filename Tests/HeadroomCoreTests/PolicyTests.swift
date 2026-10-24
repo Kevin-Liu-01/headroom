@@ -146,6 +146,28 @@ struct PolicyTests {
         #expect(t.claudeCriticalGB == 70)
     }
 
+    // Security audit 2026-10: a broken settings file must never turn automatic restarts back on.
+    @Test func aMistypedKeyResetsOnlyThatKey() throws {
+        let paths = Fixture.tempPaths()
+        try Data(#"{"restartIdleSessions": false, "processStepGB": 48, "sampleSeconds": "20"}"#.utf8).write(to: paths.settings)
+        let t = Store.loadThresholds(paths: paths)
+        #expect(t.restartIdleSessions == false)
+        #expect(t.processStepGB == 48)
+        #expect(t.sampleSeconds == Thresholds.defaults.sampleSeconds)
+    }
+
+    @Test func anUnreadableSettingsFileKeepsRestartsOff() throws {
+        let paths = Fixture.tempPaths()
+        try Data("{".utf8).write(to: paths.settings)
+        #expect(Store.loadThresholds(paths: paths).restartIdleSessions == false)
+        try Data(#"{"restartIdleSessions": "no"}"#.utf8).write(to: paths.settings)
+        #expect(Store.loadThresholds(paths: paths).restartIdleSessions == false)
+    }
+
+    @Test func noSettingsFileKeepsTheDefaults() {
+        #expect(Store.loadThresholds(paths: Fixture.tempPaths()).restartIdleSessions == true)
+    }
+
     @Test func processStepsAreReported() {
         let largest = [ProcSummary(pid: 9, name: "node", gb: 33), ProcSummary(pid: 8, name: "ffmpeg", gb: 15.9)]
         let e = Policy.evaluate(Fixture.snapshot(claudeGB: 1, largest: largest), t)

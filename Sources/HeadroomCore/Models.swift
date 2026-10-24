@@ -372,22 +372,27 @@ public struct Thresholds: Codable, Equatable, Sendable {
     public init() {}
 
     public init(from decoder: Decoder) throws {
-        // Missing keys fall back to the defaults so an old settings file still loads.
+        // Missing keys fall back to the defaults so an old settings file still loads, and a key of the wrong type
+        // resets that key alone: one bad value never discards the person's other choices.
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Thresholds.defaults
-        agentsWarningGB = try c.decodeIfPresent(Double.self, forKey: .agentsWarningGB) ?? d.agentsWarningGB
-        agentsCriticalGB = try c.decodeIfPresent(Double.self, forKey: .agentsCriticalGB) ?? d.agentsCriticalGB
-        codexWarningGB = try c.decodeIfPresent(Double.self, forKey: .codexWarningGB) ?? d.codexWarningGB
-        codexCriticalGB = try c.decodeIfPresent(Double.self, forKey: .codexCriticalGB) ?? d.codexCriticalGB
-        claudeWarningGB = try c.decodeIfPresent(Double.self, forKey: .claudeWarningGB) ?? d.claudeWarningGB
-        claudeCriticalGB = try c.decodeIfPresent(Double.self, forKey: .claudeCriticalGB) ?? d.claudeCriticalGB
-        freeWarningPercent = try c.decodeIfPresent(Double.self, forKey: .freeWarningPercent) ?? d.freeWarningPercent
-        freeCriticalPercent = try c.decodeIfPresent(Double.self, forKey: .freeCriticalPercent) ?? d.freeCriticalPercent
-        processStepGB = try c.decodeIfPresent(Double.self, forKey: .processStepGB) ?? d.processStepGB
-        sampleSeconds = try c.decodeIfPresent(Double.self, forKey: .sampleSeconds) ?? d.sampleSeconds
-        lowSampleSeconds = try c.decodeIfPresent(Double.self, forKey: .lowSampleSeconds) ?? d.lowSampleSeconds
-        repeatMinutes = try c.decodeIfPresent(Double.self, forKey: .repeatMinutes) ?? d.repeatMinutes
-        restartIdleSessions = try c.decodeIfPresent(Bool.self, forKey: .restartIdleSessions) ?? d.restartIdleSessions
+        func value(_ key: CodingKeys, _ fallback: Double) -> Double {
+            (try? c.decodeIfPresent(Double.self, forKey: key)) ?? fallback
+        }
+        agentsWarningGB = value(.agentsWarningGB, d.agentsWarningGB)
+        agentsCriticalGB = value(.agentsCriticalGB, d.agentsCriticalGB)
+        codexWarningGB = value(.codexWarningGB, d.codexWarningGB)
+        codexCriticalGB = value(.codexCriticalGB, d.codexCriticalGB)
+        claudeWarningGB = value(.claudeWarningGB, d.claudeWarningGB)
+        claudeCriticalGB = value(.claudeCriticalGB, d.claudeCriticalGB)
+        freeWarningPercent = value(.freeWarningPercent, d.freeWarningPercent)
+        freeCriticalPercent = value(.freeCriticalPercent, d.freeCriticalPercent)
+        processStepGB = value(.processStepGB, d.processStepGB)
+        sampleSeconds = value(.sampleSeconds, d.sampleSeconds)
+        lowSampleSeconds = value(.lowSampleSeconds, d.lowSampleSeconds)
+        repeatMinutes = value(.repeatMinutes, d.repeatMinutes)
+        // The switch for Headroom's one action on another process: present but unreadable means off, never on.
+        restartIdleSessions = c.contains(.restartIdleSessions) ? ((try? c.decode(Bool.self, forKey: .restartIdleSessions)) ?? false) : d.restartIdleSessions
     }
 
     public static let defaults = Thresholds()
