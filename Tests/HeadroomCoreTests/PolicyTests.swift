@@ -162,6 +162,10 @@ struct PolicyTests {
         #expect(Store.loadThresholds(paths: paths).restartIdleSessions == false)
         try Data(#"{"restartIdleSessions": "no"}"#.utf8).write(to: paths.settings)
         #expect(Store.loadThresholds(paths: paths).restartIdleSessions == false)
+        // Something at the path that is not a readable file.
+        try FileManager.default.removeItem(at: paths.settings)
+        try FileManager.default.createDirectory(at: paths.settings, withIntermediateDirectories: false)
+        #expect(Store.loadThresholds(paths: paths).restartIdleSessions == false)
     }
 
     @Test func noSettingsFileKeepsTheDefaults() {

@@ -63,10 +63,12 @@ public enum Store {
 
     public static func loadThresholds(paths: Paths) -> Thresholds {
         let scaled = Thresholds.scaled(toMemoryGB: Double(SystemProbe.totalBytes()) / 1_073_741_824)
-        guard let data = try? Data(contentsOf: paths.settings) else { return scaled }
-        guard let t = try? JSON.decoder().decode(Thresholds.self, from: data) else {
-            // A settings file that is there but is not settings JSON may have turned automatic restarts off:
-            // the lines fall back to the defaults, the restart switch to off.
+        // No settings file at all: a new install, the documented defaults.
+        guard FileManager.default.fileExists(atPath: paths.settings.path) else { return scaled }
+        // A settings file that is there but cannot be read or is not settings JSON may have turned automatic
+        // restarts off: the lines fall back to the defaults, the restart switch to off.
+        guard let data = try? Data(contentsOf: paths.settings),
+              let t = try? JSON.decoder().decode(Thresholds.self, from: data) else {
             var safe = scaled
             safe.restartIdleSessions = false
             return safe
