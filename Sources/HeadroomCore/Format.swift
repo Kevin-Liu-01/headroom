@@ -14,6 +14,27 @@ public enum Format {
         (value * 100).rounded() / 100
     }
 
+    /// Four decimals: GB to about 0.1 MB.
+    public static func round4(_ value: Double) -> Double {
+        (value * 10_000).rounded() / 10_000
+    }
+
+    /// A length of time in its two largest units: "2 d 9 h", "21 h 52 min", "45 min" or "40 s".
+    public static func span(seconds: Double) -> String {
+        let s = max(0, Int(seconds))
+        if s >= 86_400 { return "\(s / 86_400) d \(s % 86_400 / 3600) h" }
+        if s >= 3600 { return "\(s / 3600) h \(s % 3600 / 60) min" }
+        if s >= 60 { return "\(s / 60) min" }
+        return "\(s) s"
+    }
+
+    /// A clock time, with the day when it is not today: "16:42" or "Oct 26 16:42".
+    public static func clock(_ date: Date, now: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "MMM d HH:mm"
+        return f.string(from: date)
+    }
+
     /// The last path component of a working directory. The home folder is "Home folder"; the root folder, or
     /// no folder, gives the process name when there is one.
     public static func label(forCwd cwd: String?, process: String? = nil) -> String {

@@ -84,6 +84,10 @@ struct SettingsView: View {
             Text("Nothing is lost when its last turn ended 10 minutes ago, nothing waits in its queue, it set no timer or monitor, and no subagent or shell of its has run in that time.")
                 .ty(.small).foregroundStyle(Tok.titanium).fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 16).padding(.bottom, 12)
+            Rule()
+            head("Leftovers", "Processes that outlived the session, shell or script that started them. The windows list them with their pids once they are this old. Headroom never stops one on its own; its Kill button does, after a second click.")
+            Rule(color: Tok.hairSoft)
+            single("List after", $t.leftoverMinutes, "min")
             Spacer(minLength: 0)
         }
     }

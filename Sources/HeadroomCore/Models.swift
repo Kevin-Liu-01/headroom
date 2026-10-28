@@ -15,10 +15,16 @@ public struct Proc: Codable, Equatable, Sendable {
     public var uid: UInt32
     /// CPU time used so far, user plus system, in seconds. Nil when unreadable.
     public var cpuSeconds: Double?
+    /// The process group. The commands of one pipeline share it. Zero when unknown.
+    public var pgid: Int32
+    /// For a process whose parent is launchd: true when launchd adopted it after the process that started it ended,
+    /// false when launchd started it itself, as an app or a launch agent. Nil when unknown or when its parent is not
+    /// launchd.
+    public var adopted: Bool?
 
     public init(pid: Int32, ppid: Int32, name: String, path: String, startTime: Double = 0,
                 footprint: UInt64, cwd: String? = nil, args: [String]? = nil, stopped: Bool = false, uid: UInt32 = 0,
-                cpuSeconds: Double? = nil) {
+                cpuSeconds: Double? = nil, pgid: Int32 = 0, adopted: Bool? = nil) {
         self.pid = pid
         self.ppid = ppid
         self.name = name
@@ -30,6 +36,8 @@ public struct Proc: Codable, Equatable, Sendable {
         self.stopped = stopped
         self.uid = uid
         self.cpuSeconds = cpuSeconds
+        self.pgid = pgid
+        self.adopted = adopted
     }
 
     public var gb: Double { Double(footprint) / 1_073_741_824 }
@@ -289,6 +297,68 @@ public struct HeavyJob: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// What a leftover runs: a test browser, a search, a dev server, or other node, python, bun or ffmpeg work.
+public enum LeftoverKind: String, Codable, Sendable, CaseIterable {
+    case browser, search, devServer = "dev-server", process
+
+    public var label: String {
+        switch self {
+        case .browser: "Browser"
+        case .search: "Search"
+        case .devServer: "Dev server"
+        case .process: "Process"
+        }
+    }
+}
+
+/// Processes that outlived the session, shell or script that started them. launchd adopted the top process when its
+/// parent ended, so no agent's tree counts it. Headroom lists them so the person can kill them; it never stops one
+/// on its own.
+public struct Leftover: Codable, Equatable, Sendable, Identifiable {
+    /// The process that gives the item its kind, command and folder. launchd is its parent.
+    public var pid: Int32
+    public var kind: LeftoverKind
+    /// The first arguments of that process, shortened.
+    public var command: String
+    /// That process's working directory.
+    public var cwd: String?
+    /// Every process of the item, in pid order: the top processes of one job, their subtrees and, for a browser,
+    /// its crash handlers.
+    public var pids: [Int32]
+    /// The same processes with their names, memory and start times. A kill checks each start time first, so a
+    /// reused pid is never signalled.
+    public var processes: [ProcSummary]
+    public var startTime: Double
+    /// The physical footprint of every process of the item together.
+    public var gb: Double
+    /// The CPU time every process of the item has used, user plus system, in seconds.
+    public var cpuSeconds: Double
+    /// The last sample at which the item's CPU time grew by at least 1 percent of one core over the sample
+    /// interval. Nil when Headroom has not seen it active.
+    public var lastActive: Date?
+    /// Since when Headroom has watched the item's CPU time: Headroom's start, or the item's start when that is
+    /// later. Nil in a sample taken without the app, which has no earlier samples to compare.
+    public var watchedSince: Date?
+
+    public var id: Int32 { pid }
+
+    public init(pid: Int32, kind: LeftoverKind, command: String, cwd: String?, processes: [ProcSummary], startTime: Double,
+                cpuSeconds: Double, lastActive: Date? = nil, watchedSince: Date? = nil) {
+        self.pid = pid
+        self.kind = kind
+        self.command = command
+        self.cwd = cwd
+        self.processes = processes.sorted { $0.pid < $1.pid }
+        self.pids = self.processes.map(\.pid)
+        self.startTime = startTime
+        // Four decimals, about 0.1 MB, because a stuck search holds a megabyte or two.
+        self.gb = Format.round4(processes.reduce(0) { $0 + $1.gb })
+        self.cpuSeconds = Format.round2(cpuSeconds)
+        self.lastActive = lastActive
+        self.watchedSince = watchedSince
+    }
+}
+
 /// One sample of the whole machine, attributed to the agent apps, their sessions and other apps.
 public struct Snapshot: Codable, Equatable, Sendable {
     public var time: Date
@@ -302,6 +372,8 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public var agents: AgentTotal
     public var sessions: [AgentSession]
     public var heavyJobs: [HeavyJob]
+    /// Processes that outlived what started them, at least the age Settings sets, largest first (Leftovers.swift).
+    public var leftovers: [Leftover]
     public var apps: [AppTotal]
     public var largest: [ProcSummary]
     public var processCount: Int
@@ -309,8 +381,8 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public var unreadableCount: Int
 
     public init(time: Date, system: SystemStats, claude: AgentTotal, codex: AgentTotal = .zero, agents: AgentTotal? = nil,
-                sessions: [AgentSession] = [], heavyJobs: [HeavyJob] = [], apps: [AppTotal] = [], largest: [ProcSummary] = [],
-                processCount: Int = 0, unreadableCount: Int = 0) {
+                sessions: [AgentSession] = [], heavyJobs: [HeavyJob] = [], leftovers: [Leftover] = [], apps: [AppTotal] = [],
+                largest: [ProcSummary] = [], processCount: Int = 0, unreadableCount: Int = 0) {
         self.time = time
         self.system = system
         self.claude = claude
@@ -319,10 +391,28 @@ public struct Snapshot: Codable, Equatable, Sendable {
                                            processCount: claude.processCount + codex.processCount)
         self.sessions = sessions
         self.heavyJobs = heavyJobs
+        self.leftovers = leftovers
         self.apps = apps
         self.largest = largest
         self.processCount = processCount
         self.unreadableCount = unreadableCount
+    }
+
+    /// A state.json written before 2.2 has no leftovers; it still loads, with none.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        time = try c.decode(Date.self, forKey: .time)
+        system = try c.decode(SystemStats.self, forKey: .system)
+        claude = try c.decode(AgentTotal.self, forKey: .claude)
+        codex = try c.decode(AgentTotal.self, forKey: .codex)
+        agents = try c.decode(AgentTotal.self, forKey: .agents)
+        sessions = try c.decode([AgentSession].self, forKey: .sessions)
+        heavyJobs = try c.decode([HeavyJob].self, forKey: .heavyJobs)
+        leftovers = try c.decodeIfPresent([Leftover].self, forKey: .leftovers) ?? []
+        apps = try c.decode([AppTotal].self, forKey: .apps)
+        largest = try c.decode([ProcSummary].self, forKey: .largest)
+        processCount = try c.decode(Int.self, forKey: .processCount)
+        unreadableCount = try c.decode(Int.self, forKey: .unreadableCount)
     }
 
     public func total(_ app: AgentApp) -> AgentTotal {
@@ -368,6 +458,8 @@ public struct Thresholds: Codable, Equatable, Sendable {
     public var repeatMinutes: Double = 5
     /// Restart a desktop session whose own process holds a process step or more, once a restart loses nothing.
     public var restartIdleSessions = true
+    /// The windows list a leftover once its top process is this many minutes old.
+    public var leftoverMinutes: Double = Leftovers.defaultMinutes
 
     public init() {}
 
@@ -391,6 +483,7 @@ public struct Thresholds: Codable, Equatable, Sendable {
         sampleSeconds = value(.sampleSeconds, d.sampleSeconds)
         lowSampleSeconds = value(.lowSampleSeconds, d.lowSampleSeconds)
         repeatMinutes = value(.repeatMinutes, d.repeatMinutes)
+        leftoverMinutes = value(.leftoverMinutes, d.leftoverMinutes)
         // The switch for Headroom's one action on another process: present but unreadable means off, never on.
         restartIdleSessions = c.contains(.restartIdleSessions) ? ((try? c.decode(Bool.self, forKey: .restartIdleSessions)) ?? false) : d.restartIdleSessions
     }
@@ -430,6 +523,8 @@ public struct Thresholds: Codable, Equatable, Sendable {
         t.sampleSeconds = min(600, max(5, t.sampleSeconds))
         t.lowSampleSeconds = min(t.sampleSeconds, max(2, t.lowSampleSeconds))
         t.repeatMinutes = max(1, t.repeatMinutes)
+        // From one minute to a week.
+        t.leftoverMinutes = min(10_080, max(1, t.leftoverMinutes))
         return t
     }
 

@@ -12,6 +12,12 @@ final class AppModel: ObservableObject {
     @Published var showAllSessions = false
     @Published var showAllCodex = false
     @Published var showAllJobs = false
+    @Published var showAllLeftovers = false
+    /// The leftover whose Kill button was clicked once: the next click on it kills, until `armedUntil`.
+    @Published var armedKill: Int32?
+    var armedUntil: Date?
+    /// Leftovers being killed: SIGTERM sent, SIGKILL due 5 seconds later.
+    @Published var killing: Set<Int32> = []
     /// The last 60 minutes of samples for the chart.
     @Published var history: [HistoryPoint] = []
     /// The scroll area's height limit, set from the screen the window opens on.
@@ -149,6 +155,8 @@ final class HistoryModel: ObservableObject {
 protocol WindowActions: AnyObject {
     func openMainWindow()
     func restartSession(_ pid: Int32)
+    /// The confirming second click on a leftover's Kill button. Nothing else calls it.
+    func killLeftover(_ item: Leftover)
     func openLog()
     func openSettings()
     func openNotificationSettings()
@@ -159,6 +167,7 @@ protocol WindowActions: AnyObject {
 final class NoActions: WindowActions {
     func openMainWindow() {}
     func restartSession(_ pid: Int32) {}
+    func killLeftover(_ item: Leftover) {}
     func openLog() {}
     func openSettings() {}
     func openNotificationSettings() {}

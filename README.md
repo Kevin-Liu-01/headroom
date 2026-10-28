@@ -2,7 +2,7 @@
 
 ![The macOS Force Quit dialog after the system ran out of application memory, with Claude at 237.35 GB](docs/out-of-memory.png)
 
-Headroom is a macOS app that shows how much memory the Claude and Codex desktop apps, their agent sessions and every process those sessions start are using, and keeps a record of it. A menu bar item shows the agents' total at a glance, and its window holds everything: memory now, the history (a chart from the last hour to the whole record, the peaks, the time spent at warning and critical, and the days, warnings and sessions behind them) and the session restarts. An app window shows the same with the history at full width, and opens only when you ask for it. Headroom takes no messages from agents, and the one process it ever stops is a session it recommends restarting: a Claude Code session whose own process has grown, once restarting it loses nothing, or when you press its Restart button (see [Restarting a session](#restarting-a-session)).
+Headroom is a macOS app that shows how much memory the Claude and Codex desktop apps, their agent sessions and every process those sessions start are using, and keeps a record of it. A menu bar item shows the agents' total at a glance, and its window holds everything: memory now, the history (a chart from the last hour to the whole record, the peaks, the time spent at warning and critical, and the days, warnings and sessions behind them) and the session restarts. An app window shows the same with the history at full width, and opens only when you ask for it. Both windows also list leftovers: processes that outlived the session, shell or script that started them, with their pids. Headroom takes no messages from agents, and it stops a process in two cases only. One is a session it recommends restarting: a Claude Code session whose own process has grown, once restarting it loses nothing, or when you press its Restart button (see [Restarting a session](#restarting-a-session)). The other is a leftover whose Kill button you click twice (see [Leftovers](#leftovers)).
 
 ## Screenshots
 
@@ -34,8 +34,8 @@ Headroom takes a sample every 20 seconds, and every 5 seconds while memory is hi
 - Free memory from `kern.memorystatus_level`, as a percentage of total memory.
 - Memory pressure from `kern.memorystatus_vm_pressure_level` and from a `DispatchSource` memory pressure source, which also triggers an immediate sample.
 - Swap used from `vm.swapusage`, compressed memory from `host_statistics64` and total memory from `hw.memsize`.
-- The physical footprint of every process from `proc_pid_rusage` (`RUSAGE_INFO_V4`, `ri_phys_footprint`). This is the number Activity Monitor shows.
-- The parent pid, path, start time and working directory of each process from libproc.
+- The physical footprint of every process from `proc_pid_rusage` (`RUSAGE_INFO_V4`, `ri_phys_footprint`). This is the number Activity Monitor shows. The same call gives its CPU time, `ri_user_time` plus `ri_system_time`.
+- The parent pid, process group, path, start time and working directory of each process from libproc, and for a process whose parent is launchd, whether launchd started it or adopted it.
 
 Headroom builds the process tree from the parent pids and attributes memory to two agent apps.
 
@@ -56,7 +56,7 @@ Each session is labelled by its working directory, so a person can see which pro
 
 For each session and each app Headroom also shows the change in memory over the last 10 minutes. A change shows once Headroom has 10 minutes of samples; until then the column shows a dot.
 
-Headroom also lists heavy jobs: browsers, model runs, encoders, builds, test runs, dev servers and containers above 256 MB. A heavy job is the topmost matching process with its whole subtree. The windows also show the memory totals of other apps, and the CLI prints the largest processes overall.
+Headroom also lists heavy jobs: browsers, model runs, encoders, builds, test runs, dev servers and containers above 256 MB. A heavy job is the topmost matching process with its whole subtree. It lists leftovers too, the processes no agent counts any more because whatever started them has ended (see [Leftovers](#leftovers)). The windows also show the memory totals of other apps, and the CLI prints the largest processes overall.
 
 macOS does not let an unprivileged app read the footprint of processes owned by other users, such as `WindowServer` and `kernel_task`. Headroom counts them as unreadable and leaves them out of the totals. Every Claude and Codex process belongs to the person, so the agent totals are complete.
 
@@ -72,7 +72,7 @@ The agents' lines measure the agents' work: everything in an app's total except 
 | warning | The agents', Claude's or Codex's work reaches its warning line, free memory is below 30 percent, or the system reports memory pressure while free memory is below 30 percent. |
 | critical | The agents', Claude's or Codex's work reaches its critical line, free memory is below 15 percent, or the system reports critical pressure. |
 
-The settings window changes every line and the sampling. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI uses the same lines as the app.
+The settings window changes every line, the sampling and the age at which leftovers are listed. Settings are stored in `~/Library/Application Support/Headroom/settings.json`, so the CLI uses the same lines as the app.
 
 Headroom posts a notification each time the level gets worse, naming the largest sessions and processes. While the level stays at warning or critical, the notification repeats every 5 minutes. When the level returns to ok for three samples in a row, Headroom posts a recovery note. While the level is at warning or critical, it also posts a notification each time a single process crosses another 16 GB step; with memory to spare, a big process is nothing to act on, so it stays quiet. Clicking a notification opens the menu bar window. When macOS does not let Headroom post its own notifications, Headroom posts the same text as a banner through osascript.
 
@@ -89,6 +89,27 @@ A restart loses nothing when all of these hold, read from the process table and 
 - its own process used less than 5 percent of a CPU core over the last 10 minutes.
 
 When they hold, the button is ink and Headroom restarts the session on its own, the largest first and one at a time, unless Settings turns that off. When they do not, the note says why, such as "Not yet: it replied 3 min ago", and the button reads Restart anyway, which asks first. A session started from a terminal and a Codex thread are never restarted: neither would come back on its own. Before it signals, Headroom checks that the pid still names the same process; it sends SIGTERM, and SIGKILL 30 seconds later if the process is still there. Each restart posts a notification and a `restart` event in the log. `headroom status --restart` prints the same check for every desktop session.
+
+## Leftovers
+
+When a session, a shell or a script ends, launchd adopts the processes it started. Their parent becomes launchd, pid 1, so no agent's tree counts them and no other row shows them. On the Mac this app was written for, test browsers, stuck searches, dev servers and scripts ran this way for days. Headroom lists them as leftovers, with their pids, so you can kill them. It never stops one on its own, and nothing an agent does can make it.
+
+A leftover follows these rules, checked at every sample:
+
+- Its top process has launchd as its parent and belongs to you, and launchd did not start it itself. launchd also starts apps and launch agents, and those are not leftovers. The kernel keeps the pid version of the process that started each process (`proc_pidinfo` with `PROC_PIDUNIQIDENTIFIERINFO`, `p_orig_ppidversion`), so Headroom counts only the processes that launchd adopted. When the kernel does not say, a parent of pid 1 is enough.
+- It runs from the home folder, `/opt/homebrew` or `/usr/local`, or it is a test browser, a search or a shell. A test browser is Chrome for Testing, `chrome-headless-shell`, or a Chromium, Firefox or WebKit build in a Puppeteer, Playwright or Selenium cache.
+- App bundles in `/Applications` and `~/Applications`, such as Headroom itself, your Google Chrome, system services, every process that counts toward Claude or Codex, and the agents' own processes are never leftovers.
+- One leftover is one job: the adopted processes that share a process group and started within 2 seconds of each other, each with its subtree. The commands of one pipeline are one job. A test browser also takes its two `chrome_crashpad_handler` processes, which launchd adopts as soon as they start, a moment after the browser and with pids just above its pid.
+- Its kind is browser, search, dev server or process. A search is ugrep, rg, grep or find. A dev server is `pnpm dev` or `pnpm exec`, `next dev`, `vite`, `vercel-static-preview` and the like. A process is other node, python, bun and ffmpeg work. An adopted shell takes the kind of the first process under it that has one, and is a process when none has, so a chain script that sleeps between its steps stays listed. Claude Code runs its own binary as ugrep for its searches, and its Bash tool can pipe `tail -F` into that ugrep, so a search left behind can wait for days.
+- Its top process is at least 30 minutes old. Settings changes the age.
+
+Each leftover shows its kind, its command, its folder, every pid, its age, its memory and when it was last active. The command is the first arguments of the process that gives the leftover its kind, with paths cut to their last part; for an agent's shell, it is the command inside the Bash tool's wrapper. The folder is that process's working directory. The memory is the footprint of all its processes together.
+
+Headroom reads the CPU time of every process at every sample and keeps it in memory only. A leftover was last active at the last sample at which the CPU time of its processes grew by at least 1 percent of one core since the sample before, which is 0.2 seconds in a 20 second sample, or at which one of its processes did so on its own, also before it was left behind. A stuck ugrep that uses 0.03 seconds every 20 seconds is not active, and a test browser with an animated page, at 0.9 seconds every 8 seconds, is. Until Headroom has seen a leftover active, it says "not active since Headroom started" with the time Headroom started, or since the leftover started when that was later.
+
+The menu bar window and the app window show the leftovers in a section after the heavy jobs, largest first, under a head such as "5 leftovers, 4.3 GB". The pids are text you can select and copy. A leftover's Kill button asks for a second click within 5 seconds. That click sends SIGTERM to every pid of the leftover, and 5 seconds later SIGKILL to any that is still running. Before each signal Headroom checks that the pid still names the same process, by its owner and start time, so a pid that was reused is left alone. Each kill writes a `kill` event in the log with the program, the folder's name and the pids. Headroom posts no notification about leftovers.
+
+`headroom leftovers` prints the same list as a table of kind, age, memory, last active, folder and command, with the pids on a line under each leftover. `headroom leftovers --json` prints the leftovers as `state.json` holds them.
 
 ## The record
 
@@ -109,7 +130,7 @@ The first start of version 2 also builds the record's first days from version 1'
 
 It opens only from the menu bar window's Open Headroom button. Starting Headroom, opening it again from Finder or Spotlight, and clicking a notification show the menu bar window instead, and at login only the menu bar item appears. While the app window is open, Headroom has a Dock icon and menus; when it closes, Headroom goes back to the menu bar.
 
-The left column is memory now, in the menu bar window's rows: the agents' total and level with its reasons, free memory, swap, compressed memory and pressure, then Claude and Codex with their sessions, the heavy jobs and other apps.
+The left column is memory now, in the menu bar window's rows: the agents' total and level with its reasons, free memory, swap, compressed memory and pressure, then Claude and Codex with their sessions, the heavy jobs, the leftovers and other apps.
 
 The right column is the history:
 
@@ -123,21 +144,23 @@ Warnings need minutes, so they reach back 90 days at most. The window reloads it
 
 ## The menu bar
 
-The menu bar item shows a small gauge, the agents' total in GB and a dot. The gauge's column fills toward its top line as the agents' total nears the critical line, so the empty part under the line is the headroom, and a tick on its left marks the warning line. The dot is green for ok, amber for warning and red for critical. A click opens the menu bar window under the item. It holds everything the app window does: the head with the level, its reasons and each session's Restart button; the history with the same ranges, measures, chart, figures and Days, Warnings and Sessions lists, sized to the window; Claude and Codex with their sessions, the heavy jobs and other apps; and a footer with Open Headroom, Settings, the event log, Quit Headroom and Launch at login. The session lists show six rows and the history's lists five until Show more is clicked, and the window scrolls when it is taller than the screen. A click outside the window or the Escape key closes it. Launch at login uses `SMAppService` and is off until it is turned on.
+The menu bar item shows a small gauge, the agents' total in GB and a dot. The gauge's column fills toward its top line as the agents' total nears the critical line, so the empty part under the line is the headroom, and a tick on its left marks the warning line. The dot is green for ok, amber for warning and red for critical. A click opens the menu bar window under the item. It holds everything the app window does: the head with the level, its reasons and each session's Restart button; the history with the same ranges, measures, chart, figures and Days, Warnings and Sessions lists, sized to the window; Claude and Codex with their sessions, the heavy jobs, the leftovers with their Kill buttons and other apps; and a footer with Open Headroom, Settings, the event log, Quit Headroom and Launch at login. The session, heavy job and leftover lists show six rows and the history's lists five until Show more is clicked, and the window scrolls when it is taller than the screen. A click outside the window or the Escape key closes it. Launch at login uses `SMAppService` and is off until it is turned on.
 
 ## Command line
 
 The `headroom` command works without the app. When `state.json` is older than 60 seconds, it samples the Mac directly. The record is written only by the app.
 
 ```sh
-headroom status                 # the level, the agents' totals, free memory, sessions by app, heavy jobs
+headroom status                 # the level, the agents' totals, free memory, leftovers, sessions by app, heavy jobs
 headroom status --json          # the same document as state.json
 headroom status --restart       # for every desktop session, whether a restart would lose anything
+headroom leftovers              # processes that outlived what started them: kind, age, memory, last active, folder, command, pids
+headroom leftovers --json       # the same leftovers as state.json holds them
 headroom history                # the last 24 hours in up to 36 rows: peak, average, level and largest session
 headroom history 7d             # any range: 1h, 6h, 24h, 7d, 30d, 90d, all, or Nh or Nd
 headroom days 30d               # one row per day
 headroom episodes 7d            # each stretch at warning or critical
-headroom events --follow        # the app's log: starts, alerts, pressure changes and settings
+headroom events --follow        # the app's log: starts, alerts, pressure changes, kills and settings
 headroom doctor                 # the app's state file, the record's files and a direct sample
 ```
 
@@ -158,7 +181,7 @@ Version 2 removes everything that agents talked to: the local HTTP API on port 7
 
 Version 1's files stay in `~/Library/Application Support/Headroom` until they are deleted by hand: `token`, `guard.json`, `guard-state.json`, `hook-warned.json`, `sessions.json`, `sessions-scan.json`, `sessions-history.jsonl`, `recovery/` and `rescues/`. The record starts with version 2; version 1 kept only the last 60 minutes.
 
-In `state.json`, version 3 replaces `advice` (ok, hold, critical) with `level` (ok, warning, critical) and drops `pendingRequests` and `notes`.
+In `state.json`, version 3 replaces `advice` (ok, hold, critical) with `level` (ok, warning, critical) and drops `pendingRequests` and `notes`. Version 2.2 adds `snapshot.leftovers`; a state file without it reads as one with no leftovers.
 
 ## Install
 
@@ -196,7 +219,7 @@ When a window first appears, macOS charges the process for the window's graphics
 
 ## Privacy
 
-Everything stays on the Mac, and Headroom makes no network requests and listens on no port. The state, the settings, the record and the log are files in `~/Library/Application Support/Headroom` that only the person's account can read. Headroom reads process paths, the arguments of interpreters such as node and python and of `codex` processes, the working directories of agent sessions and of the Codex app server's direct children, and the `Info.plist` of app bundles named ChatGPT or Codex to find the Codex app. The record holds session folder names and process names with their memory; the log holds alerts, which name the same. Neither holds file contents or command lines. For a session with a restart note, Headroom reads the end of its conversation file under `~/.claude/projects` to tell whether a restart would lose anything, and keeps nothing from it.
+Everything stays on the Mac, and Headroom makes no network requests and listens on no port. The state, the settings, the record and the log are files in `~/Library/Application Support/Headroom` that only the person's account can read. Headroom reads process paths, the arguments of interpreters such as node and python and of `codex` processes, the working directories of agent sessions and of the Codex app server's direct children, the arguments, working directory and original parent of each of your processes that launchd adopted, and the `Info.plist` of app bundles named ChatGPT or Codex to find the Codex app. The record holds session folder names and process names with their memory; the log holds alerts, which name the same, and kills, which name the program, the folder's name and the pids. Neither holds file contents or command lines. `state.json` holds each leftover's shortened command and its folder, and is replaced at every sample. For a session with a restart note, Headroom reads the end of its conversation file under `~/.claude/projects` to tell whether a restart would lose anything, and keeps nothing from it.
 
 ## License
 

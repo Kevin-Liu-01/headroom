@@ -5,15 +5,16 @@ description: Headroom is the person's own macOS app for seeing this Mac's memory
 
 # Headroom
 
-Headroom is the person's memory viewer and history tracker: a menu bar item and an app window that show how much memory the Claude and Codex apps and their sessions use, and a record of it over days and months. It is for the person and takes no messages from agents. The one thing it does on its own is restart a bloated desktop Claude Code session once the restart loses nothing; agents need not do anything about that.
+Headroom is the person's memory viewer and history tracker: a menu bar item and an app window that show how much memory the Claude and Codex apps and their sessions use, and a record of it over days and months. It is for the person and takes no messages from agents. The one thing it does on its own is restart a bloated desktop Claude Code session once the restart loses nothing; agents need not do anything about that. It also lists leftovers, the processes that outlived the session, shell or script that started them, and its Kill button stops one only when the person clicks it twice.
 
 ## What an agent may do
 
 Read, never write:
 
-- `headroom status` prints the level (ok, warning or critical), the agents' totals, free memory, sessions and heavy jobs. `--json` prints the same document as `state.json`.
+- `headroom status` prints the level (ok, warning or critical), the agents' totals, free memory, the leftovers' count, sessions and heavy jobs. `--json` prints the same document as `state.json`.
 - `headroom can-start --gb N` prints how much room a job of N GB would leave and always exits 0; `headroom wait` returns at once. Nothing stops agents from starting work (Kevin, 2026-10-21: "never stop agents from starting new stuff"): never hold off, queue or wait because of memory.
 - `headroom history`, `headroom days` and `headroom episodes` print the record, if the person asks what happened to memory.
+- `headroom leftovers` prints the leftovers: browsers, searches, dev servers and scripts whose parent ended, with their pids, age, memory, last activity, folder and command. `--json` prints the same items. They are for the person to kill. Never kill or signal one yourself; when they hold a lot of memory, say so in your reply.
 
 ## What no longer exists
 

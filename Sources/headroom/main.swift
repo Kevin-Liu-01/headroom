@@ -12,13 +12,16 @@ Usage:
   headroom status [--json] [--restart]     Memory now: the level (ok, warning, critical), the agents' totals,
                                            free memory, swap, sessions and heavy jobs. --restart says for every
                                            desktop session whether a restart would lose anything.
+  headroom leftovers [--json]              Processes that outlived the session, shell or script that started them:
+                                           kind, pids, age, memory, last activity, folder and command. Only the
+                                           app's Kill button stops one.
   headroom history [RANGE] [--json]        The record over a range, in up to 36 rows: peak and average per row.
                                            RANGE is 1h, 6h, 24h (the default), 7d, 30d, 90d, all, or any Nh or Nd.
   headroom days [RANGE] [--json]           One row per day: peak, average, lowest free memory and time at warning
                                            or critical. RANGE defaults to 30d.
   headroom episodes [RANGE] [--json]       The stretches at warning or critical, with their peaks and the
                                            sessions that held the most. RANGE defaults to 7d.
-  headroom events [--follow] [-n N]        Print the app's log: starts, alerts and settings.
+  headroom events [--follow] [-n N]        Print the app's log: starts, alerts, kills and settings.
   headroom doctor                          Check the app, its files and a direct sample.
   headroom can-start --gb N [--label X]    For scripts: print the room a job of N GB would leave. Always exits 0;
                                            nothing in Headroom stops a job from starting.
@@ -127,6 +130,7 @@ func printStatus(_ d: StatusDocument) {
     }
     out("Free        \(s.system.freePercent)% (\(Format.gb(s.system.freeGB)) of \(Format.gb(s.system.totalGB)))")
     out("Swap        \(Format.gb(s.system.swapUsedGB)) used, compressed \(Format.gb(s.system.compressedGB)), pressure \(s.system.pressure.rawValue)")
+    out("Leftovers   " + (s.leftovers.isEmpty ? "none" : "\(Leftovers.summary(s.leftovers)); headroom leftovers lists them"))
     if !d.reasons.isEmpty {
         out("")
         for r in d.reasons { out("  [\(r.level == .ok ? "note" : r.level.rawValue)] \(r.message)") }
@@ -157,6 +161,43 @@ func printStatus(_ d: StatusDocument) {
         out("  \(pad(p.name, 34)) \(pad(Format.gb(p.gb), 9)) pid \(p.pid)\(p.stopped ? " (paused)" : "")\(owner)")
     }
     out("")
+    out("Source: \(d.source == "app" ? "Headroom app" : "direct sample"), \(ago(d.updatedAt)).")
+}
+
+// MARK: Leftovers
+
+/// The last active column: "3 min ago", "just now", "not since 16:42", or "-" without the app's samples.
+func lastActiveText(_ l: Leftover) -> String {
+    if let last = l.lastActive {
+        let s = Date().timeIntervalSince(last)
+        return s < 60 ? "just now" : "\(Format.span(seconds: s)) ago"
+    }
+    return l.watchedSince.map { "not since \(Format.clock($0))" } ?? "-"
+}
+
+/// A table of the leftovers, largest first, each with its pids on a line of their own.
+func printLeftovers(_ d: StatusDocument) {
+    let list = d.snapshot.leftovers
+    let minutes = Int(d.thresholds.leftoverMinutes)
+    if list.isEmpty {
+        out("No leftovers: no browser, search, dev server or script has outlived what started it for \(minutes) minutes.")
+    } else {
+        out("\(Leftovers.summary(list)): processes that outlived the session, shell or script that started them, at least \(minutes) min old, largest first.")
+        out("")
+        out(pad("kind", 12) + pad("age", 13) + pad("memory", 10) + pad("last active", 25) + pad("folder", 40) + "command")
+        for l in list {
+            let command = l.command.count > 90 ? String(l.command.prefix(89)) + "…" : l.command
+            out(pad(l.kind.label, 11) + " " + pad(l.age(), 12) + " " + pad(Format.gb(l.gb), 9) + " " + pad(lastActiveText(l), 24) + " "
+                + pad(Format.shortPath(l.cwd), 39) + " " + command)
+            out(String(repeating: " ", count: 12) + "pids " + l.pids.map(String.init).joined(separator: " "))
+        }
+    }
+    out("")
+    if d.source == "app" {
+        out("Last active is the last sample at which an item used at least 1 percent of a CPU core. \"not since T\" means Headroom has not seen it active since T, when Headroom or the item started.")
+    } else {
+        out("The Headroom app is not running, so last active is unknown: it needs the app's samples.")
+    }
     out("Source: \(d.source == "app" ? "Headroom app" : "direct sample"), \(ago(d.updatedAt)).")
 }
 
@@ -254,6 +295,15 @@ case "status":
     } else {
         printStatus(d)
         printRestartChecks(d, all: a.flags.contains("restart"))
+    }
+
+case "leftovers":
+    let a = Args(rest, valued: [])
+    let d = Store.currentStatus(paths: paths)
+    if a.flags.contains("json") {
+        out(JSON.string(d.snapshot.leftovers, pretty: true))
+    } else {
+        printLeftovers(d)
     }
 
 case "history":

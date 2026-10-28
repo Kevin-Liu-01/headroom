@@ -6,8 +6,9 @@ import SwiftUI
 import UserNotifications
 
 /// The app: samples, records the history, writes state, alerts, and shows the menu bar item, its window and the
-/// app window. The one process it acts on is a recommended session restart: a desktop Claude Code session whose
-/// own process has grown, once a restart loses nothing, or when the person presses Restart.
+/// app window. It stops a process in two cases only: a recommended session restart, which is a desktop Claude Code
+/// session whose own process has grown, once a restart loses nothing or when the person presses Restart; and a
+/// leftover, when the person clicks its Kill button twice.
 final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, WindowActions {
 
     let paths = Paths()
@@ -27,6 +28,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
     var settingsWindow: NSWindow?
     var history = History()
     var trends = SessionTrends()
+    /// Every process's CPU time across samples, for each leftover's last activity. Touched on sampleQueue only.
+    var leftoverWatch = LeftoverWatch()
     var recorder: Recorder?
     var timer: DispatchSourceTimer?
     var pressureSource: DispatchSourceMemoryPressure?
@@ -36,6 +39,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
     var sampling = false
     var subscriptions: Set<AnyCancellable> = []
     let restartQueue = DispatchQueue(label: "headroom.restart", qos: .utility)
+    /// Sends the SIGKILL that follows a leftover's SIGTERM.
+    let killQueue = DispatchQueue(label: "headroom.kill", qos: .userInitiated)
     /// Sessions restarted or being restarted, by pid and start time, so none is tried twice.
     var restarted: Set<String> = []
     /// Set by --snapshot-window or --snapshot-app: the PNG path for one capture of the live window.
@@ -443,9 +448,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
         let writing = snapshotPath == nil
         sampleQueue.async { [weak self] in
             guard let self else { return }
-            var (snap, procs) = sampler.sampleWithProcesses()
-            // trends, history and the recorder are touched only on sampleQueue.
+            var (snap, procs) = sampler.sampleWithProcesses(leftoverAge: t.leftoverMinutes * 60)
+            // trends, the leftover watch, history and the recorder are touched only on sampleQueue.
             self.trends.apply(to: &snap)
+            self.leftoverWatch.apply(to: &snap, procs: procs)
             self.history.append(HistoryPoint(snap))
             let doc = Policy.status(snap, t, source: "app")
             // Whether a restart loses nothing, for each session Headroom has a note about.
@@ -476,6 +482,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
         model.status = doc
         let liveSessions = Set(doc.snapshot.sessions.map(\.pid))
         model.expanded = model.expanded.intersection(liveSessions)
+        if let armed = model.armedKill, !doc.snapshot.leftovers.contains(where: { $0.pid == armed }) { model.armedKill = nil }
         updateStatusItem(doc)
         if let path = snapshotPath {
             if snapshotApp {
@@ -598,6 +605,31 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, UN
                               body: "Its own Claude process held \(Format.gb(c.gb)). \(c.safe ? "It was idle with nothing queued, so nothing was lost. " : "")It resumes on your next message; its conversation is saved on disk.",
                               sound: false)
                 }
+                self.sampleNow()
+            }
+        }
+    }
+
+    /// The confirming second click on a leftover's Kill button, and the only caller of a leftover kill: SIGTERM to
+    /// every process of the item that is still the same process, then SIGKILL after 5 seconds to any still running.
+    /// The log names the program and folder, not the command line.
+    func killLeftover(_ item: Leftover) {
+        guard !model.killing.contains(item.pid) else { return }
+        model.killing.insert(item.pid)
+        let terminated = Leftovers.send(SIGTERM, to: item)
+        let paths = self.paths
+        let name = item.processes.first { $0.pid == item.pid }?.name ?? item.kind.label
+        killQueue.asyncAfter(deadline: .now() + Leftovers.killGrace) { [weak self] in
+            let killed = Leftovers.send(SIGKILL, to: item)
+            Store.appendEvent("kill", ["kind": item.kind.rawValue, "name": name, "folder": Format.label(forCwd: item.cwd),
+                                       "pids": item.pids.map(Int.init), "gb": item.gb, "by": "person",
+                                       "terminated": terminated.map(Int.init), "killed": killed.map(Int.init)], paths: paths)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.model.killing.remove(item.pid)
+                let n = terminated.count
+                self.model.message = n == 0 ? "\(name) had already exited."
+                    : "Stopped \(n) process\(n == 1 ? "" : "es") of \(name)" + (killed.isEmpty ? "." : "; \(killed.count) needed SIGKILL.")
                 self.sampleNow()
             }
         }

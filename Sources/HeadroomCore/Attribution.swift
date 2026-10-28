@@ -290,6 +290,9 @@ public struct Attribution {
         public var agents: AgentTotal
         public var claudePids: Set<Int32>
         public var codexPids: Set<Int32>
+        /// Every process counted toward Claude or Codex: both apps' trees, the Codex app server and every session's
+        /// processes. A leftover never includes one.
+        public var agentPids: Set<Int32>
         public var sessions: [AgentSession]
         public var sessionLabelByPid: [Int32: String]
         public var heavyJobs: [HeavyJob]
@@ -459,7 +462,7 @@ public struct Attribution {
         }
 
         return Result(claude: totals[.claude] ?? .zero, codex: totals[.codex] ?? .zero, agents: agents,
-                      claudePids: claudePids, codexPids: codexPids, sessions: sessions, sessionLabelByPid: labelByPid,
+                      claudePids: claudePids, codexPids: codexPids, agentPids: agentPids, sessions: sessions, sessionLabelByPid: labelByPid,
                       heavyJobs: Array(jobs.prefix(20)), apps: Array(apps), largest: Array(largest))
     }
 

@@ -29,8 +29,9 @@ func renderScreenshots(to dir: String, demo: Bool = false, checksDir: String? = 
     if demo { model.fixedNow = DemoData.now }
     model.history = demo ? DemoData.history() : History.read(paths: paths).points
     if !demo, let (live, _) = Store.readState(paths: paths) {
-        // Session trends live in the running app; its state file has them.
+        // Session trends and the leftovers' last activity live in the running app; its state file has them.
         model.status?.snapshot.sessions = live.snapshot.sessions
+        model.status?.snapshot.leftovers = live.snapshot.leftovers
     }
     if let first = snap.sessions.first { model.expanded = [first.pid] }
     let history = HistoryModel()

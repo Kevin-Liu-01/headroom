@@ -34,7 +34,7 @@ public struct Paths: Sendable {
 }
 
 public enum HeadroomInfo {
-    public static let version = "2.1.0"
+    public static let version = "2.2.0"
 }
 
 public enum Store {
@@ -57,8 +57,9 @@ public enum Store {
         if let (doc, mtime) = readState(paths: paths), Date().timeIntervalSince(mtime) <= maxAge {
             return doc
         }
-        let snap = (sampler ?? Sampler()).sample()
-        return Policy.status(snap, loadThresholds(paths: paths), source: "direct")
+        let t = loadThresholds(paths: paths)
+        let snap = (sampler ?? Sampler()).sample(leftoverAge: t.leftoverMinutes * 60)
+        return Policy.status(snap, t, source: "direct")
     }
 
     public static func loadThresholds(paths: Paths) -> Thresholds {

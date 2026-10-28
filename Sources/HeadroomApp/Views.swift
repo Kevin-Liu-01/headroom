@@ -40,6 +40,17 @@ extension HeavyKind {
     }
 }
 
+extension LeftoverKind {
+    var glyph: Glyph {
+        switch self {
+        case .browser: .globeAlt
+        case .search: .magnifyingGlass
+        case .devServer: .serverStack
+        case .process: .commandLine
+        }
+    }
+}
+
 struct MainView: View {
     @ObservedObject var model: AppModel
     /// The history the menu bar window shows under the head. Nil in the app window, which shows it beside.
@@ -230,6 +241,19 @@ struct MainView: View {
                 jobRow(j)
             }
             moreToggle(s.heavyJobs.count, "job", all: $model.showAllJobs)
+
+            Rule()
+            sectionHead(.archiveBox, "Leftovers", detail: s.leftovers.isEmpty ? nil : Leftovers.summary(s.leftovers))
+                .help("Processes that outlived the session, shell or script that started them, so launchd adopted them and no agent counts them. Headroom never stops one; a Kill button does, after a second click.")
+            if s.leftovers.isEmpty {
+                Rule(color: Tok.hairSoft)
+                emptyRow("No browser, search, dev server or script has outlived what started it for \(Int(st.thresholds.leftoverMinutes)) minutes.")
+            }
+            ForEach(rows(s.leftovers, all: model.showAllLeftovers)) { l in
+                Rule(color: Tok.hairSoft)
+                leftoverRow(l)
+            }
+            moreToggle(s.leftovers.count, "leftover", all: $model.showAllLeftovers)
 
             if !s.apps.isEmpty {
                 Rule()
@@ -446,6 +470,72 @@ struct MainView: View {
         }
         .padding(.horizontal, MainView.pad)
         .padding(.vertical, 8)
+    }
+
+    // MARK: Leftovers
+
+    /// A leftover: its command and memory, its kind, age and last activity, its folder, and its pids as text to
+    /// select, beside the Kill button.
+    func leftoverRow(_ l: Leftover) -> some View {
+        let lead = l.processes.first { $0.pid == l.pid }
+        var caption = "\(l.kind.label), \(l.age(now: now)) old"
+        if lead?.stopped == true { caption += ", paused" }
+        if let a = l.activity(now: now) { caption += ", " + a.prefix(1).lowercased() + a.dropFirst() }
+        let members = l.processes.map { "\($0.name) \($0.pid)" }.joined(separator: ", ")
+        return HStack(alignment: .top, spacing: MainView.gap) {
+            GlyphView(glyph: l.kind.glyph, size: MainView.slot, color: Tok.ink2).help(l.kind.label)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: MainView.gap) {
+                    Text(l.command).ty(.label).foregroundStyle(Tok.ink).lineLimit(1).truncationMode(.tail)
+                        .help(l.command)
+                    Spacer(minLength: MainView.gap)
+                    gbText(l.gb)
+                }
+                Text(caption).ty(.small).foregroundStyle(Tok.titanium).fixedSize(horizontal: false, vertical: true)
+                if let cwd = l.cwd {
+                    Text(Format.shortPath(cwd)).ty(.small).foregroundStyle(Tok.titanium).lineLimit(1).truncationMode(.middle)
+                }
+                HStack(alignment: .center, spacing: MainView.gap) {
+                    Text(verbatim: l.pids.map(String.init).joined(separator: " "))
+                        .ty(.smallNumber).foregroundStyle(Tok.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .help("\(l.pids.count) process\(l.pids.count == 1 ? "" : "es"), \(Format.span(seconds: l.cpuSeconds)) of CPU time in all: \(members)")
+                    Spacer(minLength: MainView.gap)
+                    killButton(l)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, MainView.pad)
+        .padding(.vertical, 8)
+    }
+
+    /// Kill takes a second click within 5 seconds. The second click sends SIGTERM to every pid of the item and
+    /// SIGKILL 5 seconds later to any still running. Nothing else in Headroom stops a leftover.
+    func killButton(_ l: Leftover) -> some View {
+        let busy = model.killing.contains(l.pid)
+        let armed = !busy && model.armedKill == l.pid && (model.armedUntil ?? .distantPast) > Date()
+        let n = l.pids.count
+        let them = n == 1 ? "pid \(l.pid)" : "these \(n) pids"
+        return TextButton(title: busy ? "Killing\u{2026}" : armed ? "Confirm kill" : "Kill", glyph: .xMark, primary: armed,
+                          help: armed ? "Click again to send SIGTERM to \(them), then SIGKILL after 5 seconds to any still running"
+                                      : "Kill \(them). Asks for a second click.") {
+            guard !busy, !rendering else { return }
+            if armed {
+                model.armedKill = nil
+                model.armedUntil = nil
+                actions.killLeftover(l)
+            } else {
+                let until = Date().addingTimeInterval(Leftovers.confirmSeconds)
+                model.armedKill = l.pid
+                model.armedUntil = until
+                DispatchQueue.main.asyncAfter(deadline: .now() + Leftovers.confirmSeconds) { [model] in
+                    if model.armedKill == l.pid, model.armedUntil == until { model.armedKill = nil }
+                }
+            }
+        }
+        .opacity(busy ? 0.5 : 1)
     }
 
     // MARK: Footer

@@ -2,7 +2,8 @@ import Foundation
 import HeadroomCore
 
 /// A made-up machine for `Headroom --render <dir> --demo`, so published screenshots show no real project names.
-/// Claude and Codex both run, with sessions in each app and one of each started from a terminal. Each app's
+/// Claude and Codex both run, with sessions in each app and one of each started from a terminal, and four
+/// leftovers of ended sessions. Each app's
 /// total is its app's processes plus its sessions, so a band is never smaller than its rows: Claude 39.6 GB
 /// (38.4 GB in the app, 1.2 GB in a terminal) and Codex 18.5 GB (14.6 GB in the app, 3.9 GB in a terminal).
 /// Neither app crosses its own line, and together the agents cross the 40 GB warning line at 58.1 GB.
@@ -46,6 +47,20 @@ enum DemoData {
             HeavyJob(pid: 49377, kind: .encoder, name: "ffmpeg -i demo.mov", totalGB: 0.9, processCount: 1,
                      session: "docs-site", app: .claude, startTime: now.timeIntervalSince1970 - 60),
         ]
+        // Left behind by ended sessions: a test browser, a dev server, a render script and a search fed by tail -F.
+        let leftovers = [
+            leftover(48902, .browser, "Google Chrome for Testing --headless=new about:blank", "web-app/e2e", age: 100_800,
+                     [(48902, "Google Chrome for Testing", 0.41), (48917, "chrome_crashpad_handler", 0.008),
+                      (48919, "chrome_crashpad_handler", 0.007), (48931, "Google Chrome for Testing Helper (GPU)", 0.22),
+                      (48933, "Google Chrome for Testing Helper", 0.09), (48940, "Google Chrome for Testing Helper (Renderer)", 0.47)],
+                     cpu: 51, activeAgo: nil),
+            leftover(31877, .devServer, "pnpm exec next dev --turbopack --port 3049", "docs-site", age: 266_400,
+                     [(31877, "node", 0.09), (31902, "node", 0.62), (31944, "node", 0.21)], cpu: 184, activeAgo: 720),
+            leftover(52710, .process, "node render-stills.mjs --maps=fjord,oasis", "ml-experiments", age: 7800,
+                     [(52710, "node", 0.38), (52733, "ffmpeg", 0.04)], cpu: 940, activeAgo: 20),
+            leftover(61207, .search, "ugrep -G -I -v ^\\s*$", "api", age: 205_200,
+                     [(61204, "tail", 0.0004), (61207, "ugrep", 0.0016)], cpu: 287, activeAgo: nil),
+        ]
         let apps = [
             AppTotal(name: "Google Chrome", totalGB: 9.1, processCount: 53),
             AppTotal(name: "Figma", totalGB: 1.8, processCount: 9),
@@ -60,7 +75,18 @@ enum DemoData {
                         claude: AgentTotal(pid: 41001, totalGB: 39.6, processCount: 145, appGB: 38.4),
                         codex: AgentTotal(pid: 52001, totalGB: 18.5, processCount: 72, appGB: 14.6, hostPid: 52010),
                         agents: AgentTotal(pid: nil, totalGB: 58.1, processCount: 217),
-                        sessions: sessions, heavyJobs: jobs, apps: apps, largest: largest, processCount: 812, unreadableCount: 0)
+                        sessions: sessions, heavyJobs: jobs, leftovers: leftovers, apps: apps, largest: largest,
+                        processCount: 812, unreadableCount: 0)
+    }
+
+    /// A made-up leftover. Headroom started 3 hours before the pinned clock.
+    static func leftover(_ pid: Int32, _ kind: LeftoverKind, _ command: String, _ folder: String, age: Double,
+                         _ members: [(Int32, String, Double)], cpu: Double, activeAgo: Double?) -> Leftover {
+        let start = now.timeIntervalSince1970 - age
+        return Leftover(pid: pid, kind: kind, command: command, cwd: "~/code/\(folder)",
+                        processes: members.map { ProcSummary(pid: $0.0, name: $0.1, gb: $0.2, startTime: start) },
+                        startTime: start, cpuSeconds: cpu, lastActive: activeAgo.map { now.addingTimeInterval(-$0) },
+                        watchedSince: Date(timeIntervalSince1970: max(start, now.timeIntervalSince1970 - 3 * 3600)))
     }
 
     /// An hour that climbs from about 37 GB to 58.1 GB: a training run starts 25 minutes ago and a test run

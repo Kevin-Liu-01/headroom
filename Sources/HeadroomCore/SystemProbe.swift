@@ -82,6 +82,9 @@ public enum SystemProbe {
         public var startTime: Double
         public var stopped: Bool
         public var uid: UInt32
+        public var pgid: Int32
+        /// True for a process that has exited and waits for its parent to collect it.
+        public var zombie: Bool
     }
 
     public static func bsdInfo(_ pid: Int32) -> BSDInfo? {
@@ -98,7 +101,37 @@ public enum SystemProbe {
             name: name.isEmpty ? comm : name,
             startTime: Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1_000_000,
             stopped: info.pbi_status == 4, // SSTOP
-            uid: info.pbi_uid)
+            uid: info.pbi_uid,
+            pgid: Int32(bitPattern: info.pbi_pgid),
+            zombie: info.pbi_status == 5) // SZOMB
+    }
+
+    /// `PROC_PIDUNIQIDENTIFIERINFO` from the kernel's private sys/proc_info_private.h, which the SDK leaves out. It
+    /// fills `struct proc_uniqidentifierinfo`, 56 bytes: the executable's UUID (16), the process's unique id (8), its
+    /// parent's unique id (8), its pid version (4) and its original parent's pid version (4), then 16 reserved bytes.
+    static let uniqueIdentifierFlavor: Int32 = 17
+    static let uniqueIdentifierSize = 56
+
+    /// The pid version of a process and of the process that started it. The kernel keeps the second when launchd
+    /// adopts the process after its parent exits. Nil when the kernel does not say.
+    static func pidVersions(_ pid: Int32) -> (version: Int32, originalParent: Int32)? {
+        var buf = [UInt8](repeating: 0, count: uniqueIdentifierSize)
+        let n = buf.withUnsafeMutableBytes { proc_pidinfo(pid, uniqueIdentifierFlavor, 0, $0.baseAddress, Int32(uniqueIdentifierSize)) }
+        guard n == Int32(uniqueIdentifierSize) else { return nil }
+        return buf.withUnsafeBytes { raw in
+            (raw.loadUnaligned(fromByteOffset: 32, as: Int32.self), raw.loadUnaligned(fromByteOffset: 36, as: Int32.self))
+        }
+    }
+
+    /// launchd's pid version, read once.
+    static let launchdVersion: Int32? = pidVersions(1).flatMap { $0.version > 0 ? $0.version : nil }
+
+    /// Whether launchd started the process itself, as an app, an XPC service or a launch agent, rather than adopting
+    /// it when the process that started it exited. Nil when the kernel does not say, so callers keep the plain
+    /// parent rule.
+    public static func startedByLaunchd(_ pid: Int32) -> Bool? {
+        guard let launchd = launchdVersion, let v = pidVersions(pid), v.originalParent > 0 else { return nil }
+        return v.originalParent == launchd
     }
 
     public static func path(_ pid: Int32) -> String? {
@@ -162,8 +195,9 @@ public enum SystemProbe {
         return s.isEmpty ? nil : s
     }
 
-    /// The argument vector from KERN_PROCARGS2. Only readable for the person's own processes.
-    public static func args(_ pid: Int32) -> [String]? {
+    /// The argument vector from KERN_PROCARGS2, each argument cut to `maxLength` characters. Only readable for the
+    /// person's own processes.
+    public static func args(_ pid: Int32, maxLength: Int = 300) -> [String]? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return nil }
@@ -180,7 +214,7 @@ public enum SystemProbe {
             let start = i
             while i < size, buf[i] != 0 { i += 1 }
             let s = String(decoding: buf[start..<i], as: UTF8.self)
-            out.append(s.count > 300 ? String(s.prefix(300)) : s)
+            out.append(s.count > maxLength ? String(s.prefix(maxLength)) : s)
             i += 1
         }
         return out
